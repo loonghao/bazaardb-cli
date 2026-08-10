@@ -1,0 +1,42 @@
+[package]
+name = "bazaardb-cli"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+authors = ["loonghao <hal.long@outlook.com>"]
+description = "Fast async BazaarDB card queries with a durable local cache"
+license = "MIT"
+repository = "https://github.com/loonghao/bazaardb-cli"
+readme = "README.md"
+keywords = ["bazaar", "cards", "cli", "async", "cache"]
+categories = ["command-line-utilities", "games"]
+
+[dependencies]
+anyhow = "1.0.104"
+async-trait = "0.1.92"
+axum = "0.8.9"
+clap = { version = "4.6.6", features = ["derive", "env"] }
+directories = "6.0.0"
+futures = "0.3.33"
+redb = "4.1.0"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls", "stream"] }
+self_update = { version = "0.44.0", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "reqwest", "rustls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11.0"
+tempfile = "3.27.0"
+time = { version = "0.3", features = ["formatting", "serde", "serde-well-known"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+url = "2.5"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+wiremock = "0.6.5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

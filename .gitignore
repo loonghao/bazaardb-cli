@@ -1,0 +1,6 @@
+/target
+/dist
+/.env
+*.redb
+*.redb-lock
+/vx.lock

@@ -1,0 +1,80 @@
+{
+  "schema_version": 3,
+  "id": "bazaardb",
+  "profile_version": "1.0.0",
+  "application": {
+    "family": "bazaardb",
+    "versions": []
+  },
+  "display_name": "BazaarDB",
+  "selectors": [
+    {
+      "application_names": ["chrome.exe", "msedge.exe", "firefox.exe"],
+      "window_title_contains": ["Bazaar DB", "BazaarDB"]
+    },
+    {
+      "url_hosts": ["bazaardb.gg", "global.bazaardb.gg", "nrt.bazaardb.gg"]
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "catalog",
+      "label": "Card catalog",
+      "role": "search",
+      "route": "browser_dom",
+      "targets": [
+        {
+          "id": "search",
+          "label": "Search cards",
+          "role": "searchbox",
+          "names": ["Search the Bazaar DB", "Search query"],
+          "localized_names": {
+            "zh-CN": ["搜索 Bazaar DB", "搜索卡牌"]
+          },
+          "supported_actions": ["inspect", "set_text", "submit"]
+        },
+        {
+          "id": "card_result",
+          "label": "Card result",
+          "role": "link",
+          "supported_actions": ["inspect", "open"]
+        }
+      ]
+    },
+    {
+      "id": "card_detail",
+      "label": "Card detail",
+      "role": "document",
+      "route": "browser_dom",
+      "targets": [
+        {
+          "id": "card_data",
+          "label": "Card data",
+          "role": "document",
+          "supported_actions": ["inspect"]
+        }
+      ]
+    }
+  ],
+  "state_sources": [
+    {
+      "id": "bazaardb_cli",
+      "type": "loopback_http_json",
+      "mode": "read_only",
+      "url": "http://127.0.0.1:7878/v1/state",
+      "expected_schema_version": "1.0.0",
+      "schema_version_pointer": "/schema_version",
+      "tick_pointer": "/tick",
+      "use_etag": true,
+      "timeout_ms": 2000,
+      "max_response_bytes": 8388608,
+      "optional": true
+    }
+  ],
+  "settings": {
+    "dialog_style": "application_rendered",
+    "preferred_route": "browser_dom",
+    "default_locale": "en",
+    "destructive_confirmation_required": false
+  }
+}
