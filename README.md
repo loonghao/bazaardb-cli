@@ -103,6 +103,11 @@ repositories work anonymously; high-frequency or CI environments can set
 limit. The token is used only for release metadata requests and is never logged
 or cached.
 
+Versions `0.1.0` and `0.1.1` can check for updates but cannot complete the
+asset download because they did not request binary bytes from GitHub's asset
+API. Install `0.1.2` or newer manually once; subsequent releases can use the
+normal `bazaardb-cli update` path.
+
 ## Develop with vx + just
 
 ```powershell
