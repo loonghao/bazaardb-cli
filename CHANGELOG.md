@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/loonghao/bazaardb-cli/compare/v0.1.1...v0.1.2) (2026-08-10)
+
+
+### Bug Fixes
+
+* download release asset bytes ([face9ae](https://github.com/loonghao/bazaardb-cli/commit/face9ae714a70ab2f3be8a3478cd22cbb5447d7a))
+
 ## [0.1.1](https://github.com/loonghao/bazaardb-cli/compare/v0.1.0...v0.1.1) (2026-08-10)
 
 
