@@ -97,7 +97,11 @@ bazaardb-cli update --yes
 
 The updater selects the GitHub Release archive matching the running Rust target,
 downloads `SHA256SUMS`, verifies the archive digest, and replaces only the
-current executable. Release checks use semantic version ordering.
+current executable. Release checks use semantic version ordering. Public
+repositories work anonymously; high-frequency or CI environments can set
+`GITHUB_TOKEN` (preferred) or `GH_TOKEN` to avoid GitHub's anonymous API rate
+limit. The token is used only for release metadata requests and is never logged
+or cached.
 
 ## Develop with vx + just
 

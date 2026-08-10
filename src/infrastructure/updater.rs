@@ -35,11 +35,12 @@ pub struct GithubUpdater {
     repository: &'static str,
     binary: &'static str,
     current_version: &'static str,
+    auth_token: Option<String>,
 }
 
 impl GithubUpdater {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         owner: &'static str,
         repository: &'static str,
         binary: &'static str,
@@ -50,6 +51,7 @@ impl GithubUpdater {
             repository,
             binary,
             current_version,
+            auth_token: github_token(),
         }
     }
 
@@ -137,8 +139,26 @@ impl GithubUpdater {
             .show_download_progress(false)
             .show_output(false)
             .no_confirm(true);
+        if let Some(token) = &self.auth_token {
+            builder.auth_token(token);
+        }
         Ok(builder.build()?)
     }
+}
+
+fn github_token() -> Option<String> {
+    let github = std::env::var("GITHUB_TOKEN").ok();
+    let gh = std::env::var("GH_TOKEN").ok();
+    select_github_token(github.as_deref(), gh.as_deref())
+}
+
+fn select_github_token(github: Option<&str>, gh: Option<&str>) -> Option<String> {
+    [github, gh]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|token| !token.is_empty())
+        .map(str::to_owned)
 }
 
 fn download(url: &str, destination: &Path) -> Result<()> {
@@ -186,7 +206,20 @@ fn sha256_file(path: &Path) -> Result<String> {
 mod tests {
     use std::io::Write;
 
-    use super::{checksum_for, sha256_file};
+    use super::{checksum_for, select_github_token, sha256_file};
+
+    #[test]
+    fn prefers_github_token_and_ignores_empty_values() {
+        assert_eq!(
+            select_github_token(Some(" github-token "), Some("gh-token")),
+            Some("github-token".to_owned())
+        );
+        assert_eq!(
+            select_github_token(Some("  "), Some(" gh-token ")),
+            Some("gh-token".to_owned())
+        );
+        assert_eq!(select_github_token(None, Some("  ")), None);
+    }
 
     #[test]
     fn selects_only_the_exact_asset_checksum() {
