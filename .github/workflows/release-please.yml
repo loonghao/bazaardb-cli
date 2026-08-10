@@ -4,6 +4,15 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to populate (recovery only)
+        required: false
+        type: string
+      release_version:
+        description: SemVer matching the recovery tag
+        required: false
+        type: string
 
 permissions: {}
 
@@ -20,15 +29,29 @@ jobs:
       issues: write
       pull-requests: write
     outputs:
-      release-created: ${{ steps.release.outputs.release_created }}
-      tag-name: ${{ steps.release.outputs.tag_name }}
-      version: ${{ steps.release.outputs.version }}
+      release-created: ${{ steps.release.outputs.release_created || steps.recovery.outputs.release_created }}
+      tag-name: ${{ steps.release.outputs.tag_name || steps.recovery.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version || steps.recovery.outputs.version }}
     steps:
       - id: release
+        if: github.event_name != 'workflow_dispatch' || inputs.release_tag == ''
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+      - id: recovery
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          if [[ -z "$RELEASE_VERSION" ]]; then
+            echo "release_version is required when release_tag is set" >&2
+            exit 1
+          fi
+          printf 'release_created=true\ntag_name=%s\nversion=%s\n' \
+            "$RELEASE_TAG" "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
 
   build:
     needs: release-please
