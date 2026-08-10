@@ -3,6 +3,7 @@ use std::io::Read;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderValue};
 use self_update::update::ReleaseUpdate;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -97,8 +98,16 @@ impl GithubUpdater {
         let temporary = tempfile::TempDir::new().context("failed to create update directory")?;
         let archive_path = temporary.path().join(&archive.name);
         let checksum_path = temporary.path().join("SHA256SUMS");
-        download(&archive.download_url, &archive_path)?;
-        download(&checksums.download_url, &checksum_path)?;
+        download(
+            &archive.download_url,
+            &archive_path,
+            self.auth_token.as_deref(),
+        )?;
+        download(
+            &checksums.download_url,
+            &checksum_path,
+            self.auth_token.as_deref(),
+        )?;
 
         let checksum_text = std::fs::read_to_string(&checksum_path)
             .context("failed to read downloaded SHA256SUMS")?;
@@ -161,10 +170,17 @@ fn select_github_token(github: Option<&str>, gh: Option<&str>) -> Option<String>
         .map(str::to_owned)
 }
 
-fn download(url: &str, destination: &Path) -> Result<()> {
+fn download(url: &str, destination: &Path, auth_token: Option<&str>) -> Result<()> {
     let mut file = File::create(destination)
         .with_context(|| format!("failed to create {}", destination.display()))?;
-    self_update::Download::from_url(url).download_to(&mut file)?;
+    let mut download = self_update::Download::from_url(url);
+    download.set_header(ACCEPT, HeaderValue::from_static("application/octet-stream"));
+    if let Some(token) = auth_token {
+        let authorization = HeaderValue::from_str(&format!("Bearer {token}"))
+            .context("GitHub token cannot be represented as an HTTP header")?;
+        download.set_header(AUTHORIZATION, authorization);
+    }
+    download.download_to(&mut file)?;
     Ok(())
 }
 
@@ -204,9 +220,46 @@ fn sha256_file(path: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
-    use super::{checksum_for, select_github_token, sha256_file};
+    use super::{checksum_for, download, select_github_token, sha256_file};
+
+    #[test]
+    fn asset_download_requests_binary_bytes_with_optional_authentication() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let count = stream.read(&mut buffer).unwrap();
+                request.extend_from_slice(&buffer[..count]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nrelease-bytes")
+                .unwrap();
+            String::from_utf8(request).unwrap()
+        });
+
+        let temporary = tempfile::NamedTempFile::new().unwrap();
+        download(
+            &format!("http://{address}/asset"),
+            temporary.path(),
+            Some("test-token"),
+        )
+        .unwrap();
+
+        let request = server.join().unwrap().to_ascii_lowercase();
+        assert!(request.contains("accept: application/octet-stream\r\n"));
+        assert!(request.contains("authorization: bearer test-token\r\n"));
+        assert_eq!(std::fs::read(temporary.path()).unwrap(), b"release-bytes");
+    }
 
     #[test]
     fn prefers_github_token_and_ignores_empty_values() {
