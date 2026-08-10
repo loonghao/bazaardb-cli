@@ -82,6 +82,7 @@ jobs:
           tools: "rust@1.89.0 just@1.58.0"
           setup: "true"
           cache: "true"
+          cache-key-prefix: vx-tools-${{ matrix.target }}
       - name: Build and package
         shell: pwsh
         run: vx just package "${{ matrix.target }}" "${{ needs.release-please.outputs.version }}"
