@@ -172,7 +172,6 @@ pub(super) fn load_or_rebuild(
     database_path: &Path,
     cache_dir: &Path,
     expected_stamp: DatabaseStamp,
-    external_identity_content_id: &str,
 ) -> Result<LoadedCatalog> {
     let started = Instant::now();
     fs::create_dir_all(cache_dir).with_context(|| {
@@ -194,13 +193,7 @@ pub(super) fn load_or_rebuild(
         }
     };
     let snapshot_path = snapshot_path(cache_dir, &database_sha256);
-    match read_snapshot(
-        &snapshot_path,
-        &database_sha256,
-        expected_stamp,
-        external_identity_content_id,
-        &mut trace,
-    ) {
+    match read_snapshot(&snapshot_path, &database_sha256, expected_stamp, &mut trace) {
         Ok(loaded) => {
             if !memo_hit {
                 write_memo(&memo_path, &path_hash, expected_stamp, &database_sha256)?;
@@ -216,11 +209,8 @@ pub(super) fn load_or_rebuild(
                 .context("failed to serialize normalized catalog payload")?;
             let payload_sha256 = sha256_bytes(&payload);
             let catalog_sha256 = catalog_content_sha256(&payload);
-            let identity = CatalogIdentity::from_hashes(
-                database_sha256.clone(),
-                catalog_sha256.clone(),
-                external_identity_content_id.to_owned(),
-            );
+            let identity =
+                CatalogIdentity::from_hashes(database_sha256.clone(), catalog_sha256.clone());
             let header = SnapshotHeader {
                 format_version: SNAPSHOT_FORMAT_VERSION,
                 catalog_schema_version: CATALOG_SCHEMA_VERSION.to_owned(),
@@ -300,7 +290,6 @@ fn read_snapshot(
     path: &Path,
     database_sha256: &str,
     stamp: DatabaseStamp,
-    external_identity_content_id: &str,
     trace: &mut IoTrace,
 ) -> Result<LoadedCatalog> {
     let metadata = path.metadata().context("snapshot_missing")?;
@@ -356,7 +345,6 @@ fn read_snapshot(
                 .strip_prefix("sha256:")
                 .expect("validated content ID prefix")
                 .to_owned(),
-            external_identity_content_id.to_owned(),
         ),
         cards: Arc::new(cards),
     })

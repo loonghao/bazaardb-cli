@@ -8,7 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub const CATALOG_SCHEMA_VERSION: &str = "1.1.0";
+pub const CATALOG_SCHEMA_VERSION: &str = "2.0.0";
 pub const RESOLVER_VERSION: &str = "1.2.0";
 pub const MAX_RESOLVE_BATCH: usize = 64;
 pub const MAX_CATALOG_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
@@ -177,8 +177,6 @@ impl FromStr for CardTier {
 pub struct CatalogIdentity {
     pub catalog_schema_version: &'static str,
     pub resolver_version: &'static str,
-    pub external_identity_schema_version: &'static str,
-    pub external_identity_content_id: String,
     pub database_sha256: String,
     pub content_id: String,
     pub cache_key: String,
@@ -186,21 +184,14 @@ pub struct CatalogIdentity {
 
 impl CatalogIdentity {
     #[must_use]
-    pub fn from_hashes(
-        database_sha256: String,
-        catalog_sha256: String,
-        external_identity_content_id: String,
-    ) -> Self {
+    pub fn from_hashes(database_sha256: String, catalog_sha256: String) -> Self {
         Self {
             content_id: format!("sha256:{catalog_sha256}"),
             cache_key: format!(
-                "catalog/{CATALOG_SCHEMA_VERSION}/resolver/{RESOLVER_VERSION}/database/{database_sha256}/content/{catalog_sha256}/external/{external_identity_content_id}"
+                "catalog/{CATALOG_SCHEMA_VERSION}/resolver/{RESOLVER_VERSION}/database/{database_sha256}/content/{catalog_sha256}"
             ),
             catalog_schema_version: CATALOG_SCHEMA_VERSION,
             resolver_version: RESOLVER_VERSION,
-            external_identity_schema_version:
-                crate::external_identity::EXTERNAL_IDENTITY_SCHEMA_VERSION,
-            external_identity_content_id,
             database_sha256,
         }
     }
@@ -364,7 +355,6 @@ pub struct CatalogCardProjection {
     pub tags: Vec<String>,
     pub hidden_tags: Vec<String>,
     pub tooltips: TooltipResolution,
-    pub external_references: Vec<crate::external_identity::CardExternalReference>,
 }
 
 pub(crate) fn selector_key(
