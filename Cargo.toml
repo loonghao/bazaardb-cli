@@ -4,7 +4,7 @@ version = "0.1.2"
 edition = "2024"
 rust-version = "1.89"
 authors = ["loonghao <hal.long@outlook.com>"]
-description = "Fast async BazaarDB card queries with a durable local cache"
+description = "Fast no-key The Bazaar card queries with async caching and CUA support"
 license = "MIT"
 repository = "https://github.com/loonghao/bazaardb-cli"
 readme = "README.md"
@@ -20,6 +20,7 @@ directories = "6.0.0"
 futures = "0.3.33"
 redb = "4.1.0"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls", "stream"] }
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 self_update = { version = "0.44.0", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "reqwest", "rustls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0"
@@ -30,6 +31,7 @@ tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal",
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 url = "2.5"
+uuid = { version = "1.24.0", features = ["serde"] }
 
 [dev-dependencies]
 assert_cmd = "2.0"

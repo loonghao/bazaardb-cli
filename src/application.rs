@@ -10,6 +10,10 @@ use crate::domain::{
     ApiResponse, CacheDisposition, CacheMode, GetCardRequest, SearchCardsPage, SearchCardsRequest,
     SearchResult, unwrap_data,
 };
+use crate::{
+    CatalogSearchResponse, CatalogStatus, MAX_CATALOG_RESPONSE_BYTES, ResolveBatchRequest,
+    ResolveBatchResponse,
+};
 
 #[async_trait]
 pub trait ApiGateway: Send + Sync {
@@ -20,6 +24,54 @@ pub trait ApiGateway: Send + Sync {
         ttl: std::time::Duration,
         cache_mode: CacheMode,
     ) -> Result<ApiResponse>;
+}
+
+#[async_trait]
+pub trait CatalogGateway: Send + Sync {
+    async fn status(&self) -> Result<CatalogStatus>;
+    async fn search_catalog(&self, request: &SearchCardsRequest) -> Result<CatalogSearchResponse>;
+    async fn resolve_catalog(&self, request: &ResolveBatchRequest) -> Result<ResolveBatchResponse>;
+}
+
+#[derive(Clone)]
+pub struct CatalogService {
+    gateway: Arc<dyn CatalogGateway>,
+}
+
+impl CatalogService {
+    #[must_use]
+    pub fn new(gateway: Arc<dyn CatalogGateway>) -> Self {
+        Self { gateway }
+    }
+
+    pub async fn status(&self) -> Result<CatalogStatus> {
+        self.gateway.status().await
+    }
+
+    pub async fn search(&self, request: &SearchCardsRequest) -> Result<CatalogSearchResponse> {
+        request.validate()?;
+        let response = self.gateway.search_catalog(request).await?;
+        ensure_catalog_response_size(&response)?;
+        Ok(response)
+    }
+
+    pub async fn resolve(&self, request: &ResolveBatchRequest) -> Result<ResolveBatchResponse> {
+        request.validate()?;
+        let response = self.gateway.resolve_catalog(request).await?;
+        ensure_catalog_response_size(&response)?;
+        Ok(response)
+    }
+}
+
+fn ensure_catalog_response_size(value: &impl serde::Serialize) -> Result<()> {
+    let length = serde_json::to_vec(value)?.len();
+    if length > MAX_CATALOG_RESPONSE_BYTES {
+        anyhow::bail!(
+            "catalog response exceeds the {} byte limit",
+            MAX_CATALOG_RESPONSE_BYTES
+        );
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
