@@ -1,20 +1,42 @@
 # bazaardb-cli
 
-Fast, no-key CLI queries for The Bazaar cards from the game's read-only
+Unofficial, no-key CLI queries for The Bazaar cards from the game's read-only
 `GameData.db`, with durable bounded caching, ten-win combination analysis, a
 read-only local HTTP API, and verified self-update.
 
-`bazaardb-cli` follows the same data path as
-[BazaarPlusPlus](https://github.com/BazaarPlusPlus/BazaarPlusPlus): it reads the
-SQLite game-data cache created by The Bazaar instead of calling BazaarDB's
-private website endpoints. `get` preserves complete JSON card objects, while
-catalog search and resolve use compact machine-readable projections by default.
+`bazaardb-cli` reads the SQLite cache created by the installed game. It does not
+connect to `bazaardb.gg`. `get` preserves complete local JSON card objects,
+while catalog search and resolve use compact machine-readable projections by
+default.
 
 > [!IMPORTANT]
-> Local game data contains the canonical current card definitions. BazaarDB
-> adds its own derived content, including history, builds, run statistics, and
-> inferred relationships. Those website-only enrichments are not present in
-> the `game-data` provider.
+> Local game data is an installed snapshot and may differ by game version,
+> platform, region, or update state. The CLI does not claim parity with
+> BazaarDB website content.
+
+## Project status and data-use notice
+
+This is an unofficial, independent open-source project. It is not affiliated
+with, sponsored by, approved by, or endorsed by BazaarDB, Azaro Labs LLC,
+Tempo Games, Tempo Storm, or the developers or publishers of The Bazaar.
+
+`BazaarDB`, `The Bazaar`, related names, logos, artwork, and game data are the
+property of their respective owners. The project does not bundle
+`GameData.db`, card artwork, BazaarDB pages, BazaarDB identifiers, or player-run
+data. The MIT license applies only to this project's source code and does not
+grant rights to third-party content.
+
+Card and run-data commands read only files already present on your device or
+files you explicitly provide. They do not call, scrape, mirror, reverse
+engineer, or replay requests to BazaarDB. The optional `update` command contacts
+GitHub Releases for this repository; `serve` binds only to local loopback. You
+are responsible for ensuring that you have the right to access and process each
+input file and for complying with applicable game policies, website terms,
+licenses, privacy obligations, and law.
+
+Review the current [BazaarDB Terms of Use](https://bazaardb.gg/terms) and
+[The Bazaar Mod Policy](https://www.playthebazaar.com/mod-policy) before use.
+This notice is informational and is not legal advice. See [NOTICE](NOTICE.md).
 
 ## Install
 
@@ -65,20 +87,10 @@ bazaardb-cli --provider game-data `
 | --- | --- | --- |
 | `auto` | None | Default. Require local `GameData.db`; never introduce a hidden network dependency. |
 | `game-data` | None | Read the installed game's SQLite database in query-only mode. |
-| `parse` | `BAZAARDB_API_KEY` | Use the documented third-party BazaarDB Parse API. |
 
-Select the remote provider explicitly when you need it. It is never an
-automatic fallback:
+The CLI has no BazaarDB website provider and does not accept a BazaarDB API key.
 
-```powershell
-$env:BAZAARDB_API_KEY = "..."
-bazaardb-cli --provider parse search poison --category items
-```
-
-`PARSE_API_KEY` remains a compatibility fallback. Credentials never enter the
-response cache, logs, or JSON output.
-
-Both providers expose `search_cards` and `get_card` through the same CLI
+The local provider exposes `search_cards` and `get_card` through the CLI
 contract. Categories are `all`, `items`, `skills`, `merchants`, `trainers`,
 `monsters`, and `events`. Search supports zero-based pages, limits, sorting,
 ordering, unobtainable-card inclusion, and bounded concurrent `--all` queries.
@@ -128,11 +140,6 @@ can classify effects and fence per-template caches without requesting raw JSON.
 The digest includes the catalog content fence so referenced cross-template
 static definitions cannot change unnoticed.
 
-The standalone catalog also owns reviewed `externalReferences` from
-`data/card-identities.json`. `externalIdentityContentId` versions this map
-independently from local GameData `contentId`; references remain optional
-inspection metadata and never override the installed game's definitions.
-
 ## Cache
 
 The cache directory has two stores:
@@ -163,9 +170,8 @@ corruption or contract mismatch.
 `cache clear --yes` maintain both response and catalog stores.
 
 Response keys include the catalog cache key, endpoint, and sorted query
-parameters. Parse keys include the API base instead. Neither key includes a
-credential. `offline` can query a local catalog snapshot on a response-cache
-miss; Parse requires an existing cached response.
+parameters. `offline` can query a local catalog snapshot on a response-cache
+miss.
 
 ## Ten-win combinations
 
@@ -188,10 +194,8 @@ Each record contains `wins`, `hero`, and `cards`. Duplicate card names inside a
 run count once. Results are sorted by run count, then card name, so repeated
 queries are deterministic. See [Ten-win combinations](docs/ten-win-combinations.md).
 
-BazaarDB Community Builds currently has no documented, versioned public API,
-and its run pages are protected by anti-abuse controls. The CLI therefore does
-not scrape those pages. Export only data you own or are authorized to process,
-then query it locally.
+The CLI does not obtain run data from BazaarDB. Import only data that you have
+the right to process, then query it locally.
 
 ## Local HTTP API
 
@@ -248,6 +252,6 @@ Architecture decisions are recorded in
 
 ## License and data
 
-The CLI source is MIT licensed. BazaarDB and The Bazaar data, names, art, and
-other content remain subject to their respective owners' terms and rights. The
-CLI opens the user's local game database read-only and does not redistribute it.
+The CLI source is MIT licensed. Third-party names and data are not licensed by
+this repository. See [Project status and data-use notice](#project-status-and-data-use-notice)
+and [NOTICE](NOTICE.md).

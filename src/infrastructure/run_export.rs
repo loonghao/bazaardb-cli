@@ -14,6 +14,14 @@ struct WrappedRuns {
     runs: Vec<RunRecord>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum JsonExport {
+    Wrapped(WrappedRuns),
+    Array(Vec<RunRecord>),
+    Record(RunRecord),
+}
+
 pub fn load_run_export(path: &Path) -> Result<Vec<RunRecord>> {
     let bytes = if path == Path::new("-") {
         read_limited(io::stdin().lock()).context("failed to read run export from stdin")?
@@ -30,21 +38,12 @@ pub fn parse_run_export(bytes: &[u8]) -> Result<Vec<RunRecord>> {
     if bytes.is_empty() {
         bail!("run export is empty");
     }
-    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) {
-        return match value {
-            serde_json::Value::Array(_) => {
-                serde_json::from_value(value).context("run export array contains an invalid record")
-            }
-            serde_json::Value::Object(ref object) if object.contains_key("runs") => {
-                serde_json::from_value::<WrappedRuns>(value)
-                    .map(|wrapped| wrapped.runs)
-                    .context("run export wrapper contains invalid records")
-            }
-            serde_json::Value::Object(_) => serde_json::from_value(value)
-                .map(|run| vec![run])
-                .context("run export contains an invalid record"),
-            _ => bail!("run export must be a JSON array, an object with runs, or JSONL records"),
-        };
+    if let Ok(export) = serde_json::from_slice::<JsonExport>(bytes) {
+        return Ok(match export {
+            JsonExport::Wrapped(wrapped) => wrapped.runs,
+            JsonExport::Array(runs) => runs,
+            JsonExport::Record(run) => vec![run],
+        });
     }
 
     let text = std::str::from_utf8(bytes).context("run export is not valid UTF-8")?;

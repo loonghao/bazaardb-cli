@@ -9,8 +9,6 @@ use std::path::Path;
 use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::time::Duration;
 use tempfile::TempDir;
-use wiremock::matchers::{header, method, path, query_param};
-use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const EAGLE_ID: &str = "0022c409-c839-41e8-8022-65a407457dfe";
 const MERCHANT_ID: &str = "1022c409-c839-41e8-8022-65a407457dfe";
@@ -467,7 +465,7 @@ fn replace_snapshot_header(path: &Path, field: &str, replacement: &str) {
     let current = if field == "resolverVersion" {
         "1.2.0"
     } else {
-        "1.1.0"
+        "2.0.0"
     };
     let old = format!("\"{field}\":\"{current}\"");
     let new = format!("\"{field}\":\"{replacement}\"");
@@ -493,211 +491,6 @@ fn available_loopback_port() -> u16 {
         .local_addr()
         .unwrap()
         .port()
-}
-
-#[tokio::test]
-async fn search_uses_the_documented_endpoint_and_offline_cache() {
-    let server = MockServer::start().await;
-    let cache = TempDir::new().unwrap();
-    Mock::given(method("GET"))
-        .and(path("/search_cards"))
-        .and(header("X-API-Key", "test-key"))
-        .and(query_param("query", "sword"))
-        .and(query_param("category", "items"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": {
-                "page": 0,
-                "limit": 25,
-                "count": 1,
-                "total": 1,
-                "cards": [{"id": "card-1", "name": "Sword of Swords", "type": "Item"}]
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    command()
-        .args([
-            "--provider",
-            "parse",
-            "--api-base",
-            &server.uri(),
-            "--api-key",
-            "test-key",
-            "--cache-dir",
-            cache.path().to_str().unwrap(),
-            "search",
-            "sword",
-            "--category",
-            "items",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Sword of Swords"))
-        .stdout(predicate::str::contains("\"miss\""));
-
-    command()
-        .args([
-            "--provider",
-            "parse",
-            "--api-base",
-            &server.uri(),
-            "--cache-dir",
-            cache.path().to_str().unwrap(),
-            "--cache-mode",
-            "offline",
-            "search",
-            "sword",
-            "--category",
-            "items",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Sword of Swords"))
-        .stdout(predicate::str::contains("\"offline\""));
-}
-
-#[tokio::test]
-async fn get_card_preserves_the_complete_card_payload() {
-    let server = MockServer::start().await;
-    let cache = TempDir::new().unwrap();
-    Mock::given(method("GET"))
-        .and(path("/get_card"))
-        .and(query_param("name", "Bar of Soap"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": {
-                "id": "soap-id",
-                "name": "Bar of Soap",
-                "tiers": {"Bronze": {"active_tooltips": [0]}},
-                "unknown_future_field": {"retained": true}
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    command()
-        .args([
-            "--provider",
-            "parse",
-            "--api-base",
-            &server.uri(),
-            "--api-key",
-            "test-key",
-            "--cache-dir",
-            cache.path().to_str().unwrap(),
-            "get",
-            "Bar of Soap",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("unknown_future_field"))
-        .stdout(predicate::str::contains("retained"));
-}
-
-#[tokio::test]
-async fn search_all_fetches_and_orders_every_page() {
-    let server = MockServer::start().await;
-    let cache = TempDir::new().unwrap();
-    for (page, name) in [(0, "Alpha"), (1, "Bravo"), (2, "Charlie")] {
-        Mock::given(method("GET"))
-            .and(path("/search_cards"))
-            .and(query_param("page", page.to_string()))
-            .and(query_param("limit", "1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "data": {
-                    "page": page,
-                    "limit": 1,
-                    "count": 1,
-                    "total": 3,
-                    "cards": [{"id": format!("card-{page}"), "name": name}]
-                }
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-    }
-
-    let output = command()
-        .args([
-            "--provider",
-            "parse",
-            "--api-base",
-            &server.uri(),
-            "--api-key",
-            "test-key",
-            "--cache-dir",
-            cache.path().to_str().unwrap(),
-            "search",
-            "--limit",
-            "1",
-            "--all",
-            "--concurrency",
-            "3",
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let data = &value["data"];
-    assert_eq!(data["pages_fetched"], 3);
-    assert_eq!(data["count"], 3);
-    assert_eq!(data["cards"][0]["name"], "Alpha");
-    assert_eq!(data["cards"][1]["name"], "Bravo");
-    assert_eq!(data["cards"][2]["name"], "Charlie");
-}
-
-#[tokio::test]
-async fn search_all_honors_page_offset_and_page_budget() {
-    let server = MockServer::start().await;
-    let cache = TempDir::new().unwrap();
-    for (page, name) in [(2, "Charlie"), (3, "Delta")] {
-        Mock::given(method("GET"))
-            .and(path("/search_cards"))
-            .and(query_param("page", page.to_string()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "data": {
-                    "page": page,
-                    "limit": 1,
-                    "count": 1,
-                    "total": 6,
-                    "cards": [{"id": format!("card-{page}"), "name": name}]
-                }
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-    }
-
-    command()
-        .args([
-            "--provider",
-            "parse",
-            "--api-base",
-            &server.uri(),
-            "--api-key",
-            "test-key",
-            "--cache-dir",
-            cache.path().to_str().unwrap(),
-            "search",
-            "--page",
-            "2",
-            "--limit",
-            "1",
-            "--all",
-            "--max-pages",
-            "2",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Charlie"))
-        .stdout(predicate::str::contains("Delta"))
-        .stdout(predicate::str::contains("\"pages_fetched\": 2"));
 }
 
 #[tokio::test]
@@ -780,6 +573,27 @@ fn endpoints_and_cache_status_do_not_require_credentials() {
         .assert()
         .success()
         .stdout(predicate::str::contains("\"entries\": 0"));
+}
+
+#[test]
+fn public_cli_exposes_only_local_data_sources() {
+    let help = command().arg("--help").output().unwrap();
+    assert!(help.status.success());
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(!help.contains("parse"));
+    assert!(!help.contains("api-base"));
+    assert!(!help.contains("api-key"));
+
+    let endpoints = command().arg("endpoints").output().unwrap();
+    assert!(endpoints.status.success());
+    let endpoints: serde_json::Value = serde_json::from_slice(&endpoints.stdout).unwrap();
+    assert_eq!(
+        endpoints["data"]["providers"],
+        json!({
+            "auto": "Require and use the installed game's read-only GameData.db",
+            "game-data": "Read the installed game's local SQLite card catalog without an API key"
+        })
+    );
 }
 
 #[test]
@@ -937,25 +751,6 @@ fn ten_wins_rejects_duplicate_run_ids() {
 }
 
 #[test]
-fn missing_api_key_is_a_structured_error() {
-    let cache = TempDir::new().unwrap();
-    command()
-        .args([
-            "--provider",
-            "parse",
-            "--api-base",
-            "http://127.0.0.1:9/",
-            "--cache-dir",
-            cache.path().to_str().unwrap(),
-            "search",
-            "sword",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("BAZAARDB_API_KEY"));
-}
-
-#[test]
 fn game_data_provider_queries_without_credentials_and_reuses_response_cache() {
     let directory = TempDir::new().unwrap();
     let database = directory.path().join("GameData.db");
@@ -978,7 +773,7 @@ fn game_data_provider_queries_without_credentials_and_reuses_response_cache() {
         .args(arguments)
         .assert()
         .success()
-        .stdout(predicate::str::contains("the-bazaar/GameData.db"))
+        .stdout(predicate::str::contains("local/GameData.db"))
         .stdout(predicate::str::contains("Eagle Talisman"))
         .stdout(predicate::str::contains("payloadIdConsistency"))
         .stdout(predicate::str::contains("\"miss\""));
@@ -1099,11 +894,10 @@ fn resolve_is_compact_stable_and_enchantment_aware() {
     assert_eq!(record["authorizesAction"], false);
 }
 
-#[tokio::test]
-async fn external_identity_fence_is_independent_and_compact_references_are_owned_here() {
+#[test]
+fn compact_catalog_does_not_bundle_third_party_identifiers() {
     let directory = TempDir::new().unwrap();
-    let first_database = directory.path().join("first.db");
-    let second_database = directory.path().join("second.db");
+    let database = directory.path().join("GameData.db");
     let cache = directory.path().join("cache");
     let card = json!({
         "Id": UNIBOU_ID,
@@ -1116,93 +910,33 @@ async fn external_identity_fence_is_independent_and_compact_references_are_owned
         "Localization": {"Title": {"Text": "Unibou"}},
         "Tiers": {"Bronze": {"Attributes": {"Shield": 10}}}
     });
-    create_single_card_game_data(&first_database, UNIBOU_ID, &card);
-    let mut changed = card.clone();
-    changed["Tiers"]["Bronze"]["Attributes"]["Shield"] = json!(11);
-    create_single_card_game_data(&second_database, UNIBOU_ID, &changed);
+    create_single_card_game_data(&database, UNIBOU_ID, &card);
 
-    let resolve = |database: &Path| {
-        let output = command()
-            .args([
-                "--provider",
-                "game-data",
-                "--game-data",
-                database.to_str().unwrap(),
-                "--cache-dir",
-                cache.to_str().unwrap(),
-                "resolve",
-                &format!("{UNIBOU_ID}@Bronze"),
-            ])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
-    };
-    let first = resolve(&first_database);
-    let second = resolve(&second_database);
-    assert_eq!(first["externalIdentitySchemaVersion"], "1.0.0");
-    assert_eq!(
-        first["externalIdentityContentId"],
-        second["externalIdentityContentId"]
-    );
-    assert_ne!(first["contentId"], second["contentId"]);
-    assert_ne!(
-        first["results"][0]["templateContentId"],
-        first["externalIdentityContentId"]
-    );
-    let reference = &first["results"][0]["template"]["externalReferences"][0];
-    assert_eq!(reference["provider"], "bazaardb");
-    assert_eq!(reference["externalCardId"], "l1n7dqkk5gpl0n6h52880y0jq5");
-    assert_eq!(reference["canonicalName"], "Unibou");
-
-    let port = available_loopback_port();
-    let child = ProcessCommand::new(env!("CARGO_BIN_EXE_bazaardb-cli"))
+    let output = command()
         .args([
             "--provider",
             "game-data",
             "--game-data",
-            first_database.to_str().unwrap(),
+            database.to_str().unwrap(),
             "--cache-dir",
             cache.to_str().unwrap(),
-            "serve",
-            "--port",
-            &port.to_string(),
-            "--refresh-seconds",
-            "300",
+            "resolve",
+            &format!("{UNIBOU_ID}@Bronze"),
         ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+        .output()
         .unwrap();
-    let _guard = ChildGuard(child);
-    let client = reqwest::Client::new();
-    let endpoint = format!("http://127.0.0.1:{port}/v1/catalog/search?query=Unibou");
-    let response = {
-        let mut response = None;
-        for _ in 0..50 {
-            if let Ok(candidate) = client.get(&endpoint).send().await
-                && candidate.status().is_success()
-            {
-                response = Some(candidate);
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        response.expect("catalog API did not start")
-    };
-    let search: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(
-        search["externalIdentityContentId"],
-        first["externalIdentityContentId"]
+    assert!(output.status.success());
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(response.get("externalIdentitySchemaVersion").is_none());
+    assert!(response.get("externalIdentityContentId").is_none());
+    assert!(
+        response["results"][0]["template"]
+            .get("externalReferences")
+            .is_none()
     );
-    assert_eq!(
-        search["cards"][0]["externalReferences"][0]["externalCardId"],
-        "l1n7dqkk5gpl0n6h52880y0jq5"
-    );
+    let serialized = String::from_utf8(output.stdout).unwrap();
+    assert!(!serialized.contains("bazaardb.gg"));
+    assert!(!serialized.contains("externalCardId"));
 }
 
 #[test]
@@ -1291,15 +1025,10 @@ async fn catalog_api_is_read_only_compact_and_fail_closed() {
     let status: serde_json::Value = status.json().await.unwrap();
     assert_eq!(status["authority"], "inspection_only");
     assert_eq!(status["authorizesAction"], false);
-    assert_eq!(status["catalogSchemaVersion"], "1.1.0");
+    assert_eq!(status["catalogSchemaVersion"], "2.0.0");
     assert_eq!(status["resolverVersion"], "1.2.0");
-    assert_eq!(status["externalIdentitySchemaVersion"], "1.0.0");
-    assert!(
-        status["externalIdentityContentId"]
-            .as_str()
-            .unwrap()
-            .starts_with("sha256:")
-    );
+    assert!(status.get("externalIdentitySchemaVersion").is_none());
+    assert!(status.get("externalIdentityContentId").is_none());
     assert!(
         !serde_json::to_string(&status)
             .unwrap()

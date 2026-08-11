@@ -24,6 +24,7 @@ try {
     Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $stage $binaryName)
     Copy-Item -LiteralPath (Join-Path $repoRoot "README.md") -Destination $stage
     Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination $stage
+    Copy-Item -LiteralPath (Join-Path $repoRoot "NOTICE.md") -Destination $stage
     Set-Content -LiteralPath (Join-Path $stage "VERSION") -Value $Version -NoNewline
 
     if ($isWindowsTarget) {

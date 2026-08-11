@@ -10,18 +10,15 @@ Last verified: 2026-08
 2. Otherwise detect a valid local `GameData.db`.
 3. Fail with a local setup error if no database exists.
 
-`auto` is offline-first and never falls back to a network provider. Parse is an
-explicit opt-in with `--provider parse`.
+`auto` is offline-only and never falls back to a network provider.
 
 Force a provider when deterministic source selection matters:
 
 ```powershell
 bazaardb-cli --provider game-data --game-data C:\path\to\GameData.db search poison
-bazaardb-cli --provider parse search poison
 ```
 
-Environment equivalents are `BAZAARDB_PROVIDER`, `BAZAARDB_GAME_DATA`,
-`BAZAARDB_API_BASE`, and `BAZAARDB_API_KEY`.
+Environment equivalents are `BAZAARDB_PROVIDER` and `BAZAARDB_GAME_DATA`.
 
 ## Local game-data provider
 
@@ -104,7 +101,7 @@ Duplicate full resolution tuples are rejected; distinct tiers/selectors for the
 same template remain valid.
 It accumulates attributes from the starting tier through the requested tier,
 with later layers overriding earlier values. Ability and aura IDs remain in
-stable first-seen order. Compact results contain the authoritative SQLite row
+stable first-seen order. Compact results contain the source SQLite row
 ID, payload-ID consistency, type, tier, size, tags, resolved attributes, and
 typed component completeness. For item resolution, type, tier, size, tags, and
 tier attributes are required. Version and tooltips are optional, but a present
@@ -113,11 +110,10 @@ lookup identity and makes strict resolve fail closed.
 
 Compact search and resolve projections include ordered normalized tooltip text
 with typed shape/missing/malformed status. They also include a per-template
-`templateContentId` over the authoritative row ID and canonical full static
+`templateContentId` over the SQLite row ID and canonical full static
 definition plus the catalog content fence, allowing client caches to verify
 template and cross-template dependency integrity without raw templates or live
-instance overrides. Reviewed BazaarDB aliases appear as `externalReferences`
-with a separate `externalIdentityContentId`; local GameData remains authoritative.
+instance overrides.
 
 Per-card `enchantmentId` uses exact, case-sensitive game identifiers. Without
 one, enchantments report `not_requested`. Only the selected definition is
@@ -126,22 +122,6 @@ returned unless `includeAllEnchantments=true`; raw templates similarly require
 
 See [Catalog protocol](catalog-protocol.md) for loopback endpoints, typed errors,
 authority metadata, and the static/runtime ownership boundary.
-
-## Parse provider
-
-The Parse adapter calls only `search_cards` and `get_card` under the configured
-HTTPS API base. Loopback HTTP is accepted for contract tests. It sends the key
-in `X-API-Key`, retries bounded transport, HTTP 429, and server failures, and
-limits response sizes.
-
-```powershell
-$env:BAZAARDB_API_KEY = "..."
-bazaardb-cli --provider parse search poison
-```
-
-The adapter uses a fresh response, a valid response-cache hit, or a stale cached
-response for up to seven days when the provider is unavailable. Strict offline
-mode fails on a cache miss.
 
 ## Troubleshooting
 
@@ -156,22 +136,12 @@ set `BAZAARDB_GAME_DATA`.
 The selected file is not the game database or is incomplete. Point the CLI at
 the `prod/cache/GameData.db` file and let the game finish updating before retrying.
 
-### `BazaarDB API key is required; set BAZAARDB_API_KEY or PARSE_API_KEY`
-
-The CLI selected `parse`. Use `--provider game-data` with a local database, or
-set a valid Parse provider key.
-
-### `API request failed with HTTP 401 Unauthorized`
-
-The configured key is not accepted by the Parse provider. This is unrelated to
-the no-key local provider. Switch to `--provider game-data` or replace the key.
-
 ## Data boundary
 
-`GameData.db` contains current game definitions. BazaarDB's website adds derived
-content such as patch history, builds, runs, statistics, and inferred pools.
-The local provider does not synthesize or claim those enrichments.
+`GameData.db` is an installed local snapshot. It can differ by version,
+platform, region, or update state. The provider does not request BazaarDB
+website content or claim parity with it.
 
-`ten-wins` is separate from both card providers. It analyzes user-supplied run
+`ten-wins` is separate from the card provider. It analyzes user-supplied run
 exports locally and never treats run outcomes as static catalog fields. See
 [Ten-win combinations](ten-win-combinations.md).
