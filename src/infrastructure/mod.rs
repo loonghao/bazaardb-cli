@@ -2,6 +2,7 @@ mod cache;
 mod catalog_snapshot;
 mod game_data_gateway;
 mod parse_gateway;
+mod run_export;
 mod updater;
 
 pub use cache::{CacheEntry, CacheStatus, CacheStore};
@@ -11,4 +12,5 @@ pub use catalog_snapshot::{
 };
 pub use game_data_gateway::{GameDataGateway, GameDataGatewayConfig, detect_game_data_path};
 pub use parse_gateway::{DEFAULT_API_BASE, ParseGateway, ParseGatewayConfig};
+pub use run_export::{load_run_export, parse_run_export};
 pub use updater::{GithubUpdater, InstallStatus, UpdateCheck};

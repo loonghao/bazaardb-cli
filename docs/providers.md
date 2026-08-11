@@ -114,7 +114,7 @@ lookup identity and makes strict resolve fail closed.
 Compact search and resolve projections include ordered normalized tooltip text
 with typed shape/missing/malformed status. They also include a per-template
 `templateContentId` over the authoritative row ID and canonical full static
-definition plus the catalog content fence, allowing companion caches to verify
+definition plus the catalog content fence, allowing client caches to verify
 template and cross-template dependency integrity without raw templates or live
 instance overrides. Reviewed BazaarDB aliases appear as `externalReferences`
 with a separate `externalIdentityContentId`; local GameData remains authoritative.
@@ -171,3 +171,7 @@ the no-key local provider. Switch to `--provider game-data` or replace the key.
 `GameData.db` contains current game definitions. BazaarDB's website adds derived
 content such as patch history, builds, runs, statistics, and inferred pools.
 The local provider does not synthesize or claim those enrichments.
+
+`ten-wins` is separate from both card providers. It analyzes user-supplied run
+exports locally and never treats run outcomes as static catalog fields. See
+[Ten-win combinations](ten-win-combinations.md).

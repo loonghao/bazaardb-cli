@@ -25,8 +25,8 @@ endpoints.
 
 - Add `game-data` as a read-only adapter and make `auto` require it when a valid
   local database can be detected.
-- Keep `parse` as an explicit optional provider only. Agent and in-game paths
-  must not acquire a hidden API-key or network dependency.
+- Keep `parse` as an explicit optional provider only. Default CLI queries must
+  not acquire a hidden API-key or network dependency.
 - Accept an explicit `--game-data` path and auto-detect only narrow,
   platform-specific The Bazaar cache roots. Do not recursively scan unrelated
   user directories.
@@ -45,7 +45,7 @@ endpoints.
   absent payload `Id` is recorded; a conflicting or malformed payload `Id`
   fails strict resolution without changing lookup/sort identity.
 - Preserve raw card JSON for explicit `get` and `includeRawTemplate` operations.
-  Use compact projections for default agent search and batch resolve responses.
+  Use compact projections for default search and batch resolve responses.
 - Include ordered normalized tooltip text and a per-template content digest in
   compact projections so consumers do not need raw templates for effect
   classification or cache integrity. Fence that digest with catalog content so
@@ -67,8 +67,8 @@ endpoints.
   Resolve only the explicitly applied enchantment by default.
 - Bound persistent snapshots to three generations, 30 days, and 1 GiB; expose
   count/bytes and lifecycle through status, automatic/manual prune, and clear.
-- Own static catalog data only. Player logs, live board/stash/selection,
-  per-instance overrides, and ActionIntent remain outside this process.
+- Own static catalog data only. Player logs, live board/stash/selection, and
+  per-instance overrides remain outside this process.
 - Do not claim that local data includes BazaarDB's derived history, builds,
   stats, or inferred relationships.
 

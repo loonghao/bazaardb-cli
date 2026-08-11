@@ -4,6 +4,7 @@ pub mod domain;
 mod external_identity;
 pub mod infrastructure;
 pub mod server;
+pub mod ten_wins;
 
 pub use application::{BazaarService, CatalogGateway, CatalogService};
 pub use catalog::{
@@ -22,4 +23,7 @@ pub use external_identity::{CardExternalReference, EXTERNAL_IDENTITY_SCHEMA_VERS
 pub use infrastructure::{
     CacheStore, GameDataGateway, GameDataGatewayConfig, ParseGateway, ParseGatewayConfig,
     detect_game_data_path,
+};
+pub use ten_wins::{
+    RunRecord, TenWinCombination, TenWinFilters, TenWinQuery, TenWinResult, analyze_ten_wins,
 };

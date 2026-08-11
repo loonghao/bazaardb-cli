@@ -3,8 +3,8 @@
 Protocol versions: `catalogSchemaVersion=1.1.0`, `resolverVersion=1.2.0`.
 
 `bazaardb-cli` is the owner of the normalized static The Bazaar card catalog.
-The protocol is designed for replaceable companion adapters and deterministic
-agent caches. It contains no action authority and no live match state.
+The protocol is designed for replaceable local clients and deterministic
+caches. It is read-only and contains no live match state.
 
 ## Identity
 
@@ -104,8 +104,8 @@ resolve/<contentId>/<templateId>/<tier>/selector/all
 resolve/<contentId>/<templateId>/<tier>/selector/exact/<enchantmentId>
 ```
 
-This key intentionally excludes live instance overrides. A companion may key
-its own projection with the same tuple.
+This key intentionally excludes live instance overrides. A client may key its
+own projection with the same tuple.
 
 Every compact card also carries `templateContentId`. It hashes the authoritative
 row ID, canonical full static template definition, catalog schema, and resolver
@@ -151,7 +151,6 @@ flags.
 
 ## Ownership boundary
 
-The catalog may contain static template attributes and definitions. It does not
-read `Player.log`, identify the current board/stash/selection, apply permanent
-instance damage/ammo/slot overrides, or authorize/emit ActionIntent. Those are
-runtime companion responsibilities.
+The catalog contains static template attributes and definitions. It does not
+read player logs, inspect the current board or stash, or apply live instance
+overrides.

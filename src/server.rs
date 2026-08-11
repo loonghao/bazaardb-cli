@@ -82,7 +82,7 @@ pub async fn serve(
         .route("/healthz", get(health_handler))
         .with_state(AppState { state, catalog });
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
-    tracing::info!(listen = %config.listen, "BazaarDB CUA state server started");
+    tracing::info!(listen = %config.listen, "BazaarDB read-only HTTP server started");
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
