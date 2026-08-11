@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/loonghao/bazaardb-cli/compare/v0.1.2...v0.2.0) (2026-08-11)
+
+
+### Features
+
+* add offline static catalog provider ([#10](https://github.com/loonghao/bazaardb-cli/issues/10)) ([58fe61c](https://github.com/loonghao/bazaardb-cli/commit/58fe61c85937dff31688d76a0e5f8acc579ed57c))
+
+
+### Bug Fixes
+
+* harden catalog migration contracts ([#12](https://github.com/loonghao/bazaardb-cli/issues/12)) ([9ef42cb](https://github.com/loonghao/bazaardb-cli/commit/9ef42cb54f14935218b103616b89475d1b4a5401))
+
 ## [0.1.2](https://github.com/loonghao/bazaardb-cli/compare/v0.1.1...v0.1.2) (2026-08-10)
 
 
