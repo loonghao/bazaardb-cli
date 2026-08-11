@@ -10,15 +10,14 @@ use bazaardb_cli::domain::{
     CacheDisposition, CacheMode, GetCardRequest, OUTPUT_SCHEMA_VERSION, SearchCardsRequest,
 };
 use bazaardb_cli::infrastructure::{
-    DEFAULT_API_BASE, GithubUpdater, catalog_cache_status, clear_catalog_cache, load_run_export,
-    prune_catalog_cache,
+    GithubUpdater, catalog_cache_status, clear_catalog_cache, load_run_export, prune_catalog_cache,
 };
 use bazaardb_cli::server::{ServeConfig, loopback_socket};
 use bazaardb_cli::{
     BazaarService, CacheStore, CanonicalGameIdentifier, CanonicalUuid, CardTier, CatalogService,
-    GameDataGateway, GameDataGatewayConfig, ParseGateway, ParseGatewayConfig, ResolveBatchRequest,
-    ResolveBatchResponse, ResolveCardRequest, ResolveJsonlRecord, ResolveMode, TenWinQuery,
-    TenWinResult, analyze_ten_wins, detect_game_data_path,
+    GameDataGateway, GameDataGatewayConfig, ResolveBatchRequest, ResolveBatchResponse,
+    ResolveCardRequest, ResolveJsonlRecord, ResolveMode, TenWinQuery, TenWinResult,
+    analyze_ten_wins, detect_game_data_path,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
@@ -37,12 +36,6 @@ struct Cli {
     #[arg(long, env = "BAZAARDB_GAME_DATA", global = true)]
     game_data: Option<PathBuf>,
 
-    #[arg(long, env = "BAZAARDB_API_BASE", default_value = DEFAULT_API_BASE, global = true)]
-    api_base: String,
-
-    #[arg(long, env = "BAZAARDB_API_KEY", hide_env_values = true, global = true)]
-    api_key: Option<String>,
-
     #[arg(long, env = "BAZAARDB_CACHE_DIR", global = true)]
     cache_dir: Option<PathBuf>,
 
@@ -60,7 +53,6 @@ struct Cli {
 enum ProviderArg {
     Auto,
     GameData,
-    Parse,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -89,7 +81,7 @@ enum OutputFormat {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Search cards across every BazaarDB category.
+    /// Search the installed game's local card catalog.
     Search(SearchArgs),
     /// Fetch one complete card by its name.
     Get(GetArgs),
@@ -379,8 +371,7 @@ async fn run() -> Result<()> {
                         ],
                         "providers": {
                             "auto": "Require and use the installed game's read-only GameData.db",
-                            "game-data": "Read The Bazaar's local SQLite card catalog without an API key",
-                            "parse": "Use the documented BazaarDB Parse API with an API key"
+                            "game-data": "Read the installed game's local SQLite card catalog without an API key"
                         }
                     }),
                 },
@@ -476,9 +467,9 @@ async fn run() -> Result<()> {
                 ..SearchCardsRequest::default()
             };
             request.validate()?;
-            let catalog = services.catalog.context(
-                "serve requires the game-data provider; Parse cannot own the local catalog API",
-            )?;
+            let catalog = services
+                .catalog
+                .context("serve requires the game-data provider")?;
             bazaardb_cli::server::serve(
                 service,
                 catalog,
@@ -531,13 +522,12 @@ fn create_services(
                     "GameData.db was not found; launch The Bazaar once or pass --game-data PATH",
                 )?,
         ),
-        ProviderArg::Parse => ProviderSelection::Parse,
         ProviderArg::Auto => ProviderSelection::GameData(
             cli.game_data
                 .clone()
                 .or_else(detect_game_data_path)
                 .context(
-                    "GameData.db was not found; launch The Bazaar once, pass --game-data PATH, or explicitly select --provider parse",
+                    "GameData.db was not found; launch The Bazaar once or pass --game-data PATH",
                 )?,
         ),
     };
@@ -553,25 +543,7 @@ fn create_services(
             Ok(SelectedServices {
                 cards: BazaarService::new(gateway.clone()),
                 catalog: Some(CatalogService::new(gateway)),
-                source: "the-bazaar/GameData.db",
-            })
-        }
-        ProviderSelection::Parse => {
-            let api_key = cli
-                .api_key
-                .clone()
-                .or_else(|| std::env::var("PARSE_API_KEY").ok());
-            let gateway = ParseGateway::new(ParseGatewayConfig {
-                api_base: cli.api_base.clone(),
-                api_key,
-                cache,
-                stale_for: Duration::from_secs(7 * 24 * 60 * 60),
-                max_retries: 3,
-            })?;
-            Ok(SelectedServices {
-                cards: BazaarService::new(Arc::new(gateway)),
-                catalog: None,
-                source: "parse.bot/bazaardb-gg-api",
+                source: "local/GameData.db",
             })
         }
     }
@@ -579,7 +551,6 @@ fn create_services(
 
 enum ProviderSelection {
     GameData(PathBuf),
-    Parse,
 }
 
 async fn execute_cache(

@@ -1,10 +1,11 @@
 # Static catalog protocol
 
-Protocol versions: `catalogSchemaVersion=1.1.0`, `resolverVersion=1.2.0`.
+Protocol versions: `catalogSchemaVersion=2.0.0`, `resolverVersion=1.2.0`.
 
-`bazaardb-cli` is the owner of the normalized static The Bazaar card catalog.
-The protocol is designed for replaceable local clients and deterministic
-caches. It is read-only and contains no live match state.
+`bazaardb-cli` normalizes the installed game's local static card snapshot. It
+does not claim ownership of the underlying game data. The protocol is designed
+for replaceable local clients and deterministic caches. It is read-only and
+contains no live match state.
 
 ## Identity
 
@@ -12,10 +13,8 @@ Every successful response carries:
 
 ```json
 {
-  "catalogSchemaVersion": "1.1.0",
+  "catalogSchemaVersion": "2.0.0",
   "resolverVersion": "1.2.0",
-  "externalIdentitySchemaVersion": "1.0.0",
-  "externalIdentityContentId": "sha256:external-reference-catalog-hash",
   "databaseSha256": "actual lowercase SHA-256",
   "contentId": "sha256:canonical-catalog-and-contract-hash",
   "cacheKey": "catalog/...",
@@ -27,9 +26,6 @@ Every successful response carries:
 `databaseSha256` identifies source bytes. `contentId` also changes when the
 canonical normalized payload, schema, or resolver semantics change. Consumers
 must fence projections with `contentId`, not database size or mtime.
-`externalIdentityContentId` independently fences the bundled, reviewed
-BazaarDB alias map. Updating an external alias does not change GameData
-`contentId`; response cache keys include both identities.
 
 ## Loopback HTTP
 
@@ -74,7 +70,7 @@ Rules:
 - `strict` is the default. Any missing template/tier/component, tier before the
   card's starting tier, unknown enchantment, or malformed requested data fails
   the whole batch with HTTP 422. `partial` must be explicit.
-- SQLite `cards.Id` is authoritative for lookup and stable sorting. Compact
+- SQLite `cards.Id` is the local lookup and stable-sort key. Compact
   projections report payload ID consistency. Missing payload IDs are allowed;
   conflicts or malformed payload IDs make strict resolve fail closed.
 - For items, template type, starting/requested tier, size, tags, and accumulated
@@ -107,17 +103,12 @@ resolve/<contentId>/<templateId>/<tier>/selector/exact/<enchantmentId>
 This key intentionally excludes live instance overrides. A client may key its
 own projection with the same tuple.
 
-Every compact card also carries `templateContentId`. It hashes the authoritative
-row ID, canonical full static template definition, catalog schema, and resolver
+Every compact card also carries `templateContentId`. It hashes the SQLite row
+ID, canonical full static template definition, catalog schema, and resolver
 version, plus the catalog content fence. Search and resolve therefore expose
 the same digest for the same template generation; referenced cross-template
 static-definition or resolver changes produce a new digest without requiring
 `rawTemplate`.
-
-Compact projections also carry `externalReferences`. These are reviewed,
-provenance-bearing BazaarDB aliases joined by authoritative local template UUID,
-canonical name, and card type. They are optional inspection metadata and never
-override local attributes.
 
 ## Errors
 
@@ -125,7 +116,7 @@ Errors use a stable envelope and preserve inspection-only authority:
 
 ```json
 {
-  "catalogSchemaVersion": "1.1.0",
+  "catalogSchemaVersion": "2.0.0",
   "resolverVersion": "1.2.0",
   "authority": "inspection_only",
   "authorizesAction": false,

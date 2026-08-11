@@ -7,12 +7,12 @@ Accepted. The local provider decision is refined by
 
 ## Context
 
-The CLI must query The Bazaar card categories quickly, avoid repeating
+The CLI must query an installed local card snapshot quickly, avoid repeating
 identical work, preserve unknown card fields, and ship as a standalone binary.
-BazaarDB does not publish a general developer API for its website. Its terms
-restrict reverse engineering, and private website requests use anti-abuse
-controls. A separate documented Parse integration exposes `search_cards` and
-`get_card`.
+BazaarDB does not publish a public developer API for third-party use. Its terms
+limit copying, distribution, reverse engineering, and competitive use of the
+site. The project cannot establish redistribution rights for data returned by
+independent scraping wrappers.
 
 Some local tools also need the normalized catalog over HTTP. That surface must
 remain loopback-only, read-only, bounded, and independent from the command-line
@@ -20,44 +20,45 @@ presentation layer.
 
 ## Decision
 
-- Depend on provider ports in the application layer. Keep provider URLs,
-  authentication, retries, and response limits in infrastructure adapters.
+- Keep data access behind an application port and use only the read-only local
+  game-data adapter in public builds.
 - Preserve unknown card JSON at the provider boundary.
-- Cache successful remote responses in transactional redb storage. Derive keys
-  from provider identity, endpoint, and canonically sorted query pairs; never
-  include credentials.
-- Use endpoint-specific TTLs plus explicit `use`, `refresh`, and `offline`
-  modes. Permit stale fallback only within a bounded documented window.
+- Cache successful local responses in transactional redb storage. Derive keys
+  from the local catalog identity, endpoint, and canonically sorted query pairs.
+- Keep `use`, `refresh`, and `offline` cache modes deterministic and local.
 - Bind the optional HTTP service to `127.0.0.1`. Expose no mutation routes or
   local filesystem paths, and cap serialized responses.
-- Limit remote adapters to documented endpoints. Do not replay private website
-  requests or expose an arbitrary-host proxy.
+- Do not ship BazaarDB website adapters, independent scraping wrappers, copied
+  website identifiers, or arbitrary-host proxy behavior.
 - Keep ten-win analysis local and deterministic over user-supplied JSON/JSONL
-  exports until a documented run-data API is available.
+  files.
 
 ## Consequences
 
 ### Positive
 
-- Core use cases are independent from one provider and straightforward to test.
-- Repeated card queries are local, and credentials stay out of cache and output.
+- Card queries remain local and straightforward to test.
+- Repeated queries avoid database rehashing and reparsing.
 - Unknown card fields survive round trips.
-- Ten-win analysis works without taking a dependency on protected web pages.
+- Release artifacts contain code and documentation, not third-party datasets.
 
 ### Negative
 
-- The explicit Parse provider still needs a valid key.
-- Website-only history, builds, and statistics require an authorized export or
-  a future documented API.
+- The installed game cache is required for card queries.
+- Website-only history, builds, and statistics are outside project scope.
 
 ## Alternatives considered
 
-**Call BazaarDB private website requests**
+**Call BazaarDB website requests directly**
 
-Rejected because they are undocumented, protected, brittle, and unsuitable as
-a public CLI contract.
+Rejected because no public developer API or permission basis was established.
 
-**Store one JSON file per remote response**
+**Use an independent scraping wrapper**
+
+Rejected because a wrapper cannot grant rights to source-site content and does
+not change the source site's terms.
+
+**Store one JSON file per cached response**
 
 Rejected because concurrent CLI processes need transactional replacement and
 bounded maintenance without partial files.
@@ -65,5 +66,4 @@ bounded maintenance without partial files.
 ## References
 
 - https://bazaardb.gg/terms
-- https://bazaardb.gg/docs
-- https://parse.bot/marketplace/155ad353-a423-43ac-9825-c1e430c5cb06/bazaardb-gg-api
+- https://www.playthebazaar.com/mod-policy

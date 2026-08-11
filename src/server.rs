@@ -54,7 +54,7 @@ pub async fn serve(
         schema_version: OUTPUT_SCHEMA_VERSION,
         tick: 0,
         updated_at: timestamp(),
-        source: "the-bazaar/GameData.db",
+        source: "local/GameData.db",
         query: config.request.clone(),
         data: None,
         error: Some("initial query has not completed".to_owned()),
@@ -82,7 +82,7 @@ pub async fn serve(
         .route("/healthz", get(health_handler))
         .with_state(AppState { state, catalog });
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
-    tracing::info!(listen = %config.listen, "BazaarDB read-only HTTP server started");
+    tracing::info!(listen = %config.listen, "local read-only catalog server started");
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;

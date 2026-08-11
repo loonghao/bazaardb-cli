@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -136,38 +136,34 @@ pub fn analyze_ten_wins(runs: &[RunRecord], query: &TenWinQuery) -> Result<TenWi
     let hero_filter = query.hero.as_deref().map(normalize);
     let card_filter = query.card.as_deref().map(normalize);
     let ten_win_runs = runs.iter().filter(|run| run.wins == 10).count();
-    let matched = runs
-        .iter()
-        .filter(|run| run.wins == 10)
-        .filter(|run| {
-            hero_filter
-                .as_deref()
-                .is_none_or(|hero| normalize(&run.hero) == hero)
-        })
-        .filter_map(|run| {
-            let cards = normalized_cards(&run.cards);
-            card_filter
-                .as_deref()
-                .is_none_or(|card| cards.contains_key(card))
-                .then_some(cards)
-        })
-        .collect::<Vec<_>>();
-
+    let mut matched_runs = 0_usize;
     let mut total_expansion = 0_usize;
-    for cards in &matched {
-        let expansion = combination_count(cards.len(), query.combination_size);
+    let mut display_names = BTreeMap::<String, String>::new();
+    let mut counts = HashMap::<Vec<String>, usize>::new();
+    for run in runs.iter().filter(|run| run.wins == 10).filter(|run| {
+        hero_filter
+            .as_deref()
+            .is_none_or(|hero| normalize(&run.hero) == hero)
+    }) {
+        let cards = normalized_cards(&run.cards);
+        if card_filter
+            .as_deref()
+            .is_some_and(|card| !cards.contains_key(card))
+        {
+            continue;
+        }
+        matched_runs += 1;
+        let expansion = card_filter.as_deref().map_or_else(
+            || combination_count(cards.len(), query.combination_size),
+            |_| combination_count(cards.len().saturating_sub(1), query.combination_size - 1),
+        );
         total_expansion = total_expansion.saturating_add(expansion);
         if expansion > MAX_COMBINATIONS_PER_RUN || total_expansion > MAX_TOTAL_COMBINATIONS {
             bail!(
                 "requested combination expansion exceeds the safety limit; reduce combination-size or filter the runs"
             );
         }
-    }
-
-    let mut display_names = BTreeMap::<String, String>::new();
-    let mut counts = BTreeMap::<Vec<String>, usize>::new();
-    for cards in &matched {
-        for (key, display) in cards {
+        for (key, display) in &cards {
             display_names
                 .entry(key.clone())
                 .and_modify(|current| {
@@ -177,19 +173,15 @@ pub fn analyze_ten_wins(runs: &[RunRecord], query: &TenWinQuery) -> Result<TenWi
                 })
                 .or_insert_with(|| display.clone());
         }
-        let keys = cards.keys().cloned().collect::<Vec<_>>();
-        for combination in combinations(&keys, query.combination_size) {
-            if card_filter
-                .as_deref()
-                .is_some_and(|card| !combination.iter().any(|value| value == card))
-            {
-                continue;
-            }
-            *counts.entry(combination).or_insert(0) += 1;
-        }
+        count_combinations(
+            &cards,
+            query.combination_size,
+            card_filter.as_deref(),
+            &mut counts,
+        );
     }
 
-    let denominator = matched.len() as f64;
+    let denominator = matched_runs as f64;
     let mut combinations = counts
         .into_iter()
         .filter(|(_, count)| *count >= query.min_runs)
@@ -222,7 +214,7 @@ pub fn analyze_ten_wins(runs: &[RunRecord], query: &TenWinQuery) -> Result<TenWi
     Ok(TenWinResult {
         input_runs: runs.len(),
         ten_win_runs,
-        matched_runs: matched.len(),
+        matched_runs,
         combination_size: query.combination_size,
         filters: TenWinFilters {
             hero: query.hero.as_deref().map(str::trim).map(str::to_owned),
@@ -254,11 +246,45 @@ fn normalize(value: &str) -> String {
     value.trim().to_lowercase()
 }
 
+fn count_combinations(
+    cards: &BTreeMap<String, String>,
+    size: usize,
+    required_card: Option<&str>,
+    counts: &mut HashMap<Vec<String>, usize>,
+) {
+    let keys = cards.keys().cloned().collect::<Vec<_>>();
+    if let Some(required_card) = required_card {
+        let other_keys = keys
+            .into_iter()
+            .filter(|key| key != required_card)
+            .collect::<Vec<_>>();
+        for_each_combination(&other_keys, size - 1, |partial| {
+            let mut combination = partial.to_vec();
+            let insert_at = combination
+                .binary_search_by(|candidate| candidate.as_str().cmp(required_card))
+                .unwrap_or_else(|index| index);
+            combination.insert(insert_at, required_card.to_owned());
+            *counts.entry(combination).or_insert(0) += 1;
+        });
+    } else {
+        for_each_combination(&keys, size, |combination| {
+            *counts.entry(combination.to_vec()).or_insert(0) += 1;
+        });
+    }
+}
+
+#[cfg(test)]
 fn combinations(values: &[String], size: usize) -> Vec<Vec<String>> {
     let mut output = Vec::new();
-    let mut current = Vec::with_capacity(size);
-    collect_combinations(values, size, 0, &mut current, &mut output);
+    for_each_combination(values, size, |combination| {
+        output.push(combination.to_vec());
+    });
     output
+}
+
+fn for_each_combination(values: &[String], size: usize, mut visit: impl FnMut(&[String])) {
+    let mut current = Vec::with_capacity(size);
+    visit_combinations(values, size, 0, &mut current, &mut visit);
 }
 
 fn combination_count(values: usize, size: usize) -> usize {
@@ -275,15 +301,15 @@ fn combination_count(values: usize, size: usize) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-fn collect_combinations(
+fn visit_combinations(
     values: &[String],
     size: usize,
     start: usize,
     current: &mut Vec<String>,
-    output: &mut Vec<Vec<String>>,
+    visit: &mut impl FnMut(&[String]),
 ) {
     if current.len() == size {
-        output.push(current.clone());
+        visit(current);
         return;
     }
     let remaining = size - current.len();
@@ -292,7 +318,7 @@ fn collect_combinations(
     }
     for index in start..=values.len() - remaining {
         current.push(values[index].clone());
-        collect_combinations(values, size, index + 1, current, output);
+        visit_combinations(values, size, index + 1, current, visit);
         current.pop();
     }
 }
@@ -346,6 +372,37 @@ mod tests {
             error
                 .to_string()
                 .contains("requested combination expansion exceeds")
+        );
+    }
+
+    #[test]
+    fn filtered_queries_prune_unrelated_combinations_before_the_safety_limit() {
+        let run = RunRecord {
+            id: Some("run-1".into()),
+            wins: 10,
+            hero: "Dooley".into(),
+            cards: (0..30).map(|index| format!("Card {index}")).collect(),
+        };
+
+        let result = analyze_ten_wins(
+            &[run],
+            &TenWinQuery {
+                hero: None,
+                card: Some("Card 0".into()),
+                combination_size: 5,
+                min_runs: 1,
+                limit: 1_000,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.matched_runs, 1);
+        assert_eq!(result.combinations.len(), 1_000);
+        assert!(
+            result
+                .combinations
+                .iter()
+                .all(|combination| combination.cards.iter().any(|card| card == "Card 0"))
         );
     }
 }

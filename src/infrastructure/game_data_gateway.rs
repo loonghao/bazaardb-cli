@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -12,6 +11,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
+use super::catalog_snapshot::{LoadedCatalog, NormalizedCard, database_stamp, load_or_rebuild};
+use super::{CacheEntry, CacheStore};
 use crate::application::{ApiGateway, CatalogGateway};
 use crate::catalog::{
     AttributeResolution, CATALOG_SCHEMA_VERSION, CanonicalGameIdentifier, CanonicalUuid, CardTier,
@@ -23,10 +24,6 @@ use crate::catalog::{
 use crate::domain::{
     ApiResponse, CacheDisposition, CacheMode, SearchCardsPage, SearchCardsRequest,
 };
-use crate::external_identity::ExternalIdentityCatalog;
-
-use super::catalog_snapshot::{LoadedCatalog, NormalizedCard, database_stamp, load_or_rebuild};
-use super::{CacheEntry, CacheStore};
 
 const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 const MAX_DATABASE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -42,19 +39,16 @@ pub struct GameDataGateway {
     database_path: PathBuf,
     catalog_cache_dir: PathBuf,
     cache: CacheStore,
-    external_identities: Arc<ExternalIdentityCatalog>,
     generation: Mutex<Option<LoadedCatalog>>,
 }
 
 impl GameDataGateway {
     pub fn new(config: GameDataGatewayConfig) -> Result<Self> {
         let database_path = validate_database_path(&config.database_path)?;
-        let external_identities = Arc::new(ExternalIdentityCatalog::bundled()?);
         Ok(Self {
             database_path,
             catalog_cache_dir: config.catalog_cache_dir,
             cache: config.cache,
-            external_identities,
             generation: Mutex::new(None),
         })
     }
@@ -73,16 +67,10 @@ impl GameDataGateway {
 
         let database_path = self.database_path.clone();
         let catalog_cache_dir = self.catalog_cache_dir.clone();
-        let external_identity_content_id = self.external_identities.content_id().to_owned();
         let computed = tokio::task::spawn_blocking(move || {
             let mut attempt_stamp = stamp;
             for attempt in 0..3 {
-                match load_or_rebuild(
-                    &database_path,
-                    &catalog_cache_dir,
-                    attempt_stamp,
-                    &external_identity_content_id,
-                ) {
+                match load_or_rebuild(&database_path, &catalog_cache_dir, attempt_stamp) {
                     Ok(catalog) => return Ok(catalog),
                     Err(error)
                         if attempt < 2
@@ -139,7 +127,6 @@ impl GameDataGateway {
                 generation.cards.as_slice(),
                 query,
                 &generation.identity.content_id,
-                &self.external_identities,
             ),
             "get_card" => get_card(generation.cards.as_slice(), query),
             _ => bail!("unsupported endpoint {endpoint:?}"),
@@ -153,7 +140,7 @@ impl CatalogGateway for GameDataGateway {
         let generation = self.catalog_generation().await?;
         Ok(CatalogStatus {
             identity: generation.identity,
-            source: "the-bazaar/GameData.db",
+            source: "local/GameData.db",
             card_count: u32::try_from(generation.cards.len()).context("card count exceeds u32")?,
             offline: true,
             read_only: true,
@@ -169,7 +156,6 @@ impl CatalogGateway for GameDataGateway {
             generation.cards.as_slice(),
             &request.query_pairs(),
             &generation.identity.content_id,
-            &self.external_identities,
         )?;
         let page = serde_json::from_slice::<SearchCardsPage>(&body)
             .context("local catalog search produced an invalid page")?;
@@ -217,7 +203,6 @@ impl CatalogGateway for GameDataGateway {
                         include_raw_template: request.include_raw_template,
                         include_all_enchantments: request.include_all_enchantments,
                         catalog_content_id: &generation.identity.content_id,
-                        external_identities: &self.external_identities,
                     },
                 )
             })
@@ -422,7 +407,6 @@ fn search_cards(
     cards: &[NormalizedCard],
     query: &[(String, String)],
     catalog_content_id: &str,
-    external_identities: &ExternalIdentityCatalog,
 ) -> Result<Vec<u8>> {
     let query = query_map(query);
     let page = parse_u32(&query, "page")?;
@@ -464,14 +448,7 @@ fn search_cards(
         .into_iter()
         .skip(start)
         .take(limit as usize)
-        .map(|card| {
-            project_card_with_context(
-                &card.row_id,
-                &card.payload,
-                catalog_content_id,
-                external_identities,
-            )
-        })
+        .map(|card| project_card_with_context(&card.row_id, &card.payload, catalog_content_id))
         .collect::<Vec<_>>();
     serde_json::to_vec(&json!({
         "page": page,
@@ -511,7 +488,6 @@ fn project_card_with_context(
     row_id: &str,
     card: &Value,
     catalog_content_id: &str,
-    external_identities: &ExternalIdentityCatalog,
 ) -> CatalogCardProjection {
     let mut missing = Vec::new();
     let mut malformed = Vec::new();
@@ -569,18 +545,6 @@ fn project_card_with_context(
     let name = display_name(card)
         .or_else(|| internal_name(card))
         .map(str::to_owned);
-    let external_references =
-        match external_identities.reference_for(row_id, name.as_deref(), card_type.as_deref()) {
-            Ok(references) => references,
-            Err(detail) => {
-                tracing::debug!(
-                    template_id = row_id,
-                    reason = detail,
-                    "external identity reference omitted"
-                );
-                Vec::new()
-            }
-        };
     CatalogCardProjection {
         template_id: row_id.to_owned(),
         template_content_id: template_content_id(row_id, card, catalog_content_id),
@@ -596,19 +560,12 @@ fn project_card_with_context(
         tags,
         hidden_tags,
         tooltips,
-        external_references,
     }
 }
 
 #[cfg(test)]
 fn project_card(row_id: &str, card: &Value) -> CatalogCardProjection {
-    let external_identities = ExternalIdentityCatalog::bundled().unwrap();
-    project_card_with_context(
-        row_id,
-        card,
-        "sha256:test-catalog-content",
-        &external_identities,
-    )
+    project_card_with_context(row_id, card, "sha256:test-catalog-content")
 }
 
 fn template_content_id(row_id: &str, card: &Value, catalog_content_id: &str) -> String {
@@ -724,7 +681,6 @@ struct ResolveCardContext<'a> {
     include_raw_template: bool,
     include_all_enchantments: bool,
     catalog_content_id: &'a str,
-    external_identities: &'a ExternalIdentityCatalog,
 }
 
 fn resolve_card_with_context(
@@ -759,12 +715,7 @@ fn resolve_card_with_context(
     };
     let row_id = card.row_id.as_str();
     let card = &card.payload;
-    let projection = project_card_with_context(
-        row_id,
-        card,
-        context.catalog_content_id,
-        context.external_identities,
-    );
+    let projection = project_card_with_context(row_id, card, context.catalog_content_id);
 
     let starting_tier = string_field(card, "StartingTier").and_then(|value| value.parse().ok());
     let (attributes, ability_ids, aura_ids, mut missing, mut malformed) =
@@ -843,7 +794,6 @@ fn resolve_card(
     include_all_enchantments: bool,
     resolution_key: String,
 ) -> ResolvedCard {
-    let external_identities = ExternalIdentityCatalog::bundled().unwrap();
     resolve_card_with_context(
         template_id,
         tier,
@@ -854,7 +804,6 @@ fn resolve_card(
             include_raw_template,
             include_all_enchantments,
             catalog_content_id: "sha256:test-catalog-content",
-            external_identities: &external_identities,
         },
     )
 }
@@ -1478,15 +1427,8 @@ mod tests {
             ("category".to_owned(), "items".to_owned()),
             ("show_unobtainable".to_owned(), "false".to_owned()),
         ];
-        let external_identities = ExternalIdentityCatalog::bundled().unwrap();
         let value: Value = serde_json::from_slice(
-            &search_cards(
-                &cards,
-                &query,
-                "sha256:test-catalog-content",
-                &external_identities,
-            )
-            .unwrap(),
+            &search_cards(&cards, &query, "sha256:test-catalog-content").unwrap(),
         )
         .unwrap();
         assert_eq!(value["total"], 2);

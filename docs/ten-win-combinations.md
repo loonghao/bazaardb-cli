@@ -73,8 +73,8 @@ bazaardb-cli --output table ten-wins --input .\runs.json
 
 ## Data-source boundary
 
-`GameData.db` contains static card definitions, not player-run outcomes.
-BazaarDB Community Builds displays run data, but it does not currently publish
-a documented, versioned run API. This CLI does not scrape its protected pages
-or replay private website requests. Supply an export you own or are authorized
-to process.
+`GameData.db` contains static card objects, not player-run outcomes. This CLI
+does not obtain run data from BazaarDB or any game server. Supply only files
+that you have the right to access and process. Do not distribute third-party or
+personal data without the necessary rights or permission. See the repository
+[NOTICE](../NOTICE.md).
