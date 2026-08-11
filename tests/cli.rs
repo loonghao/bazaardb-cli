@@ -701,7 +701,7 @@ async fn search_all_honors_page_offset_and_page_budget() {
 }
 
 #[tokio::test]
-async fn serve_exposes_cua_state_with_etag_on_loopback() {
+async fn serve_exposes_read_only_state_with_etag_on_loopback() {
     let cache = TempDir::new().unwrap();
     let database = cache.path().join("GameData.db");
     create_game_data(&database);
@@ -740,7 +740,7 @@ async fn serve_exposes_cua_state_with_etag_on_loopback() {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        response.expect("CUA state server did not start")
+        response.expect("read-only state server did not start")
     };
     let etag = response.headers()[reqwest::header::ETAG]
         .to_str()
@@ -780,6 +780,160 @@ fn endpoints_and_cache_status_do_not_require_credentials() {
         .assert()
         .success()
         .stdout(predicate::str::contains("\"entries\": 0"));
+}
+
+#[test]
+fn ten_wins_aggregates_card_combinations_from_a_local_export() {
+    let directory = TempDir::new().unwrap();
+    let input = directory.path().join("runs.json");
+    fs::write(
+        &input,
+        serde_json::to_vec(&json!({
+            "runs": [
+                {
+                    "id": "run-1",
+                    "wins": 10,
+                    "hero": "Dooley",
+                    "cards": ["Monitor Lizard", "Cog", "Chris Army Knife"]
+                },
+                {
+                    "id": "run-2",
+                    "wins": 10,
+                    "hero": "Dooley",
+                    "cards": ["Cog", "Monitor Lizard", "C.O.R.A"]
+                },
+                {
+                    "id": "run-3",
+                    "wins": 9,
+                    "hero": "Dooley",
+                    "cards": ["Monitor Lizard", "Cog"]
+                },
+                {
+                    "id": "run-4",
+                    "wins": 10,
+                    "hero": "Vanessa",
+                    "cards": ["Monitor Lizard", "Chris Army Knife"]
+                }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let output = command()
+        .args([
+            "ten-wins",
+            "--input",
+            input.to_str().unwrap(),
+            "--hero",
+            "dooley",
+            "--combination-size",
+            "2",
+            "--min-runs",
+            "2",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["command"], "ten-wins");
+    assert_eq!(value["source"], "local-run-export");
+    assert_eq!(value["data"]["inputRuns"], 4);
+    assert_eq!(value["data"]["tenWinRuns"], 3);
+    assert_eq!(value["data"]["matchedRuns"], 2);
+    assert_eq!(value["data"]["combinationSize"], 2);
+    assert_eq!(value["data"]["combinations"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        value["data"]["combinations"][0]["cards"],
+        json!(["Cog", "Monitor Lizard"])
+    );
+    assert_eq!(value["data"]["combinations"][0]["runs"], 2);
+    assert_eq!(value["data"]["combinations"][0]["support"], 1.0);
+}
+
+#[test]
+fn ten_wins_deduplicates_cards_within_each_run_and_filters_by_card() {
+    let directory = TempDir::new().unwrap();
+    let input = directory.path().join("runs.jsonl");
+    fs::write(
+        &input,
+        concat!(
+            "{\"id\":\"run-1\",\"wins\":10,\"hero\":\"Mak\",\"cards\":[\"Athanor\",\"Broken Bottle\",\"Athanor\"]}\n",
+            "{\"id\":\"run-2\",\"wins\":10,\"hero\":\"Mak\",\"cards\":[\"Broken Bottle\",\"Athanor\"]}\n",
+            "{\"id\":\"run-3\",\"wins\":10,\"hero\":\"Mak\",\"cards\":[\"Athanor\",\"Energy Potion\"]}\n"
+        ),
+    )
+    .unwrap();
+
+    let output = command()
+        .args([
+            "ten-wins",
+            "--input",
+            input.to_str().unwrap(),
+            "--card",
+            "athanor",
+            "--combination-size",
+            "2",
+            "--min-runs",
+            "2",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["data"]["matchedRuns"], 3);
+    assert_eq!(value["data"]["combinations"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        value["data"]["combinations"][0]["cards"],
+        json!(["Athanor", "Broken Bottle"])
+    );
+    assert_eq!(value["data"]["combinations"][0]["runs"], 2);
+}
+
+#[test]
+fn ten_wins_rejects_an_invalid_combination_size() {
+    let directory = TempDir::new().unwrap();
+    let input = directory.path().join("runs.json");
+    fs::write(&input, r#"{"runs":[]}"#).unwrap();
+
+    command()
+        .args([
+            "ten-wins",
+            "--input",
+            input.to_str().unwrap(),
+            "--combination-size",
+            "1",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "combination-size must be between 2 and 5",
+        ));
+}
+
+#[test]
+fn ten_wins_rejects_duplicate_run_ids() {
+    let directory = TempDir::new().unwrap();
+    let input = directory.path().join("runs.json");
+    fs::write(
+        &input,
+        r#"{"runs":[{"id":"same","wins":10,"hero":"Mak","cards":["A","B"]},{"id":"same","wins":10,"hero":"Mak","cards":["A","B"]}]}"#,
+    )
+    .unwrap();
+
+    command()
+        .args(["ten-wins", "--input", input.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("duplicate run id: same"));
 }
 
 #[test]

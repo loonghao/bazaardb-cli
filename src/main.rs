@@ -10,14 +10,15 @@ use bazaardb_cli::domain::{
     CacheDisposition, CacheMode, GetCardRequest, OUTPUT_SCHEMA_VERSION, SearchCardsRequest,
 };
 use bazaardb_cli::infrastructure::{
-    DEFAULT_API_BASE, GithubUpdater, catalog_cache_status, clear_catalog_cache, prune_catalog_cache,
+    DEFAULT_API_BASE, GithubUpdater, catalog_cache_status, clear_catalog_cache, load_run_export,
+    prune_catalog_cache,
 };
 use bazaardb_cli::server::{ServeConfig, loopback_socket};
 use bazaardb_cli::{
     BazaarService, CacheStore, CanonicalGameIdentifier, CanonicalUuid, CardTier, CatalogService,
     GameDataGateway, GameDataGatewayConfig, ParseGateway, ParseGatewayConfig, ResolveBatchRequest,
-    ResolveBatchResponse, ResolveCardRequest, ResolveJsonlRecord, ResolveMode,
-    detect_game_data_path,
+    ResolveBatchResponse, ResolveCardRequest, ResolveJsonlRecord, ResolveMode, TenWinQuery,
+    TenWinResult, analyze_ten_wins, detect_game_data_path,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
@@ -94,11 +95,13 @@ enum Command {
     Get(GetArgs),
     /// Resolve 1-64 canonical template UUIDs at explicit tiers.
     Resolve(ResolveArgs),
+    /// Find frequent card combinations in a local export of ten-win runs.
+    TenWins(TenWinsArgs),
     /// List every endpoint supported by the configured provider.
     Endpoints,
     /// Inspect or maintain the local response cache.
     Cache(CacheArgs),
-    /// Expose a read-only loopback state source for a dcc-cua profile.
+    /// Expose the card catalog through a read-only loopback HTTP API.
     Serve(ServeArgs),
     /// Check for or install a newer GitHub Release binary.
     Update(UpdateArgs),
@@ -153,6 +156,33 @@ impl From<SearchArgs> for SearchCardsRequest {
 #[derive(Debug, Args)]
 struct GetArgs {
     name: String,
+}
+
+#[derive(Debug, Args)]
+struct TenWinsArgs {
+    /// JSON or JSONL run export. Use - to read stdin.
+    #[arg(long, value_name = "PATH")]
+    input: PathBuf,
+
+    /// Include only runs for this hero (case-insensitive exact match).
+    #[arg(long)]
+    hero: Option<String>,
+
+    /// Include only combinations containing this card.
+    #[arg(long)]
+    card: Option<String>,
+
+    /// Number of distinct cards in each combination.
+    #[arg(long, default_value_t = 2)]
+    combination_size: usize,
+
+    /// Minimum number of matching runs containing a combination.
+    #[arg(long, default_value_t = 2)]
+    min_runs: usize,
+
+    /// Maximum number of combinations to return.
+    #[arg(long, default_value_t = 20)]
+    limit: usize,
 }
 
 #[derive(Debug, Args)]
@@ -317,17 +347,8 @@ async fn run() -> Result<()> {
         .try_init()
         .ok();
     let cli = Cli::parse();
-    let cache_path = cache_path(cli.cache_dir.as_deref())?;
-    let catalog_cache_dir = cache_path
-        .parent()
-        .context("response cache path has no parent")?
-        .join("catalog");
-    let cache = CacheStore::open(&cache_path)?;
 
     match cli.command {
-        Command::Cache(args) => {
-            return execute_cache(cache, &catalog_cache_dir, args, cli.output).await;
-        }
         Command::Endpoints => {
             return print_value(
                 &Envelope {
@@ -348,6 +369,12 @@ async fn run() -> Result<()> {
                                 "commands": ["resolve"],
                                 "batch": {"minimum": 1, "maximum": 64},
                                 "requires": "game-data"
+                            },
+                            {
+                                "name": "analyze_ten_win_combinations",
+                                "commands": ["ten-wins"],
+                                "source": "local JSON or JSONL run export",
+                                "authentication": "none"
                             }
                         ],
                         "providers": {
@@ -360,8 +387,19 @@ async fn run() -> Result<()> {
                 cli.output,
             );
         }
+        Command::TenWins(args) => return execute_ten_wins(args, cli.output),
         Command::Update(args) => return execute_update(args),
         _ => {}
+    }
+
+    let cache_path = cache_path(cli.cache_dir.as_deref())?;
+    let catalog_cache_dir = cache_path
+        .parent()
+        .context("response cache path has no parent")?
+        .join("catalog");
+    let cache = CacheStore::open(&cache_path)?;
+    if let Command::Cache(args) = cli.command {
+        return execute_cache(cache, &catalog_cache_dir, args, cli.output).await;
     }
 
     let services = create_services(&cli, cache, catalog_cache_dir)?;
@@ -452,8 +490,25 @@ async fn run() -> Result<()> {
             )
             .await
         }
-        Command::Cache(_) | Command::Endpoints | Command::Update(_) => unreachable!(),
+        Command::Cache(_) | Command::Endpoints | Command::TenWins(_) | Command::Update(_) => {
+            unreachable!()
+        }
     }
+}
+
+fn execute_ten_wins(args: TenWinsArgs, output: OutputFormat) -> Result<()> {
+    let runs = load_run_export(&args.input)?;
+    let result = analyze_ten_wins(
+        &runs,
+        &TenWinQuery {
+            hero: args.hero,
+            card: args.card,
+            combination_size: args.combination_size,
+            min_runs: args.min_runs,
+            limit: args.limit,
+        },
+    )?;
+    print_ten_wins(&result, output)
 }
 
 struct SelectedServices {
@@ -655,6 +710,49 @@ fn print_cards(cards: &[Value], output: OutputFormat) -> Result<()> {
         OutputFormat::Json => unreachable!(),
     }
     Ok(())
+}
+
+fn print_ten_wins(result: &TenWinResult, output: OutputFormat) -> Result<()> {
+    match output {
+        OutputFormat::Json => print_value(
+            &Envelope {
+                schema_version: OUTPUT_SCHEMA_VERSION,
+                command: "ten-wins",
+                source: "local-run-export",
+                cache: None,
+                data: result,
+            },
+            output,
+        ),
+        OutputFormat::Jsonl => {
+            for combination in &result.combinations {
+                println!(
+                    "{}",
+                    serde_json::to_string(&serde_json::json!({
+                        "schema_version": OUTPUT_SCHEMA_VERSION,
+                        "command": "ten-wins",
+                        "source": "local-run-export",
+                        "matchedRuns": result.matched_runs,
+                        "combinationSize": result.combination_size,
+                        "combination": combination,
+                    }))?
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            println!("RUNS\tSUPPORT\tCARDS");
+            for combination in &result.combinations {
+                println!(
+                    "{}\t{:.4}\t{}",
+                    combination.runs,
+                    combination.support,
+                    combination.cards.join(" + ")
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
 fn print_resolve(response: &ResolveBatchResponse, output: OutputFormat) -> Result<()> {

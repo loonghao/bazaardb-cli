@@ -1,14 +1,14 @@
 # bazaardb-cli
 
-Fast, no-key The Bazaar card queries from the game's read-only `GameData.db`,
-with reviewed BazaarDB reference aliases, durable bounded caching, a DCC CUA
-profile bridge, a content-addressed static catalog, and verified self-update.
+Fast, no-key CLI queries for The Bazaar cards from the game's read-only
+`GameData.db`, with durable bounded caching, ten-win combination analysis, a
+read-only local HTTP API, and verified self-update.
 
 `bazaardb-cli` follows the same data path as
 [BazaarPlusPlus](https://github.com/BazaarPlusPlus/BazaarPlusPlus): it reads the
 SQLite game-data cache created by The Bazaar instead of calling BazaarDB's
 private website endpoints. `get` preserves complete JSON card objects, while
-agent-facing catalog search and resolve use compact projections by default.
+catalog search and resolve use compact machine-readable projections by default.
 
 > [!IMPORTANT]
 > Local game data contains the canonical current card definitions. BazaarDB
@@ -39,6 +39,9 @@ bazaardb-cli get "Eagle Talisman"
 # Resolve through Silver and apply one exact enchantment definition.
 bazaardb-cli resolve `
   "0022c409-c839-41e8-8022-65a407457dfe@Silver#Fiery"
+
+# Find frequent two-card combinations in an exported set of ten-win runs.
+bazaardb-cli ten-wins --input .\runs.json --hero Dooley --min-runs 2
 ```
 
 Expected table columns:
@@ -73,7 +76,7 @@ bazaardb-cli --provider parse search poison --category items
 ```
 
 `PARSE_API_KEY` remains a compatibility fallback. Credentials never enter the
-response cache, profile, logs, or JSON output.
+response cache, logs, or JSON output.
 
 Both providers expose `search_cards` and `get_card` through the same CLI
 contract. Categories are `all`, `items`, `skills`, `merchants`, `trainers`,
@@ -84,7 +87,7 @@ Run `bazaardb-cli endpoints` for the machine-readable provider surface. See
 [Provider reference](docs/providers.md) for source selection, platform paths,
 category mapping, cache behavior, and troubleshooting.
 
-## Output for agents and scripts
+## Machine-readable output
 
 JSON is the default. Every JSON command uses schema version `1.0.0` and reports
 its selected source and cache disposition.
@@ -120,7 +123,7 @@ enchantment selector)`. No enchantment request is reported as `not_requested`
 and never serializes every enchantment definition.
 
 Compact search and resolve cards include ordered normalized tooltip text and a
-`templateContentId` digest of the canonical static template definition. Agents
+`templateContentId` digest of the canonical static template definition. Callers
 can classify effects and fence per-template caches without requesting raw JSON.
 The digest includes the catalog content fence so referenced cross-template
 static definitions cannot change unnoticed.
@@ -164,21 +167,41 @@ parameters. Parse keys include the API base instead. Neither key includes a
 credential. `offline` can query a local catalog snapshot on a response-cache
 miss; Parse requires an existing cached response.
 
-## DCC CUA profile
+## Ten-win combinations
 
-[`profiles/bazaardb-cua.json`](profiles/bazaardb-cua.json) follows the dcc-cua
-semantic profile schema v3. Browser surfaces stay declarative while the CLI
-exposes fast card state through a bounded loopback source.
+`ten-wins` reads a local JSON or JSONL run export, keeps records with exactly ten
+wins, and ranks card combinations by run count and support. It does not require
+`GameData.db`, a network request, or an API key.
+
+```powershell
+bazaardb-cli ten-wins `
+  --input .\runs.json `
+  --hero Dooley `
+  --card "Monitor Lizard" `
+  --combination-size 2 `
+  --min-runs 3 `
+  --limit 20
+```
+
+The import accepts `{"runs": [...]}`, a JSON array, or one run per JSONL line.
+Each record contains `wins`, `hero`, and `cards`. Duplicate card names inside a
+run count once. Results are sorted by run count, then card name, so repeated
+queries are deterministic. See [Ten-win combinations](docs/ten-win-combinations.md).
+
+BazaarDB Community Builds currently has no documented, versioned public API,
+and its run pages are protected by anti-abuse controls. The CLI therefore does
+not scrape those pages. Export only data you own or are authorized to process,
+then query it locally.
+
+## Local HTTP API
+
+Run the optional loopback server when another local tool needs card queries:
 
 ```powershell
 bazaardb-cli serve poison --category items --port 7878
-
-# In another terminal with dcc-cua installed:
-dcc-cua profile --profile-file .\profiles\bazaardb-cua.json
-dcc-cua profile-state --profile-file .\profiles\bazaardb-cua.json --watch
 ```
 
-The server binds only `127.0.0.1`. Its canonical static catalog API is:
+The server binds only `127.0.0.1`. Its static catalog API is:
 
 - `GET /v1/catalog/status`
 - `GET /v1/catalog/search`
@@ -186,10 +209,9 @@ The server binds only `127.0.0.1`. Its canonical static catalog API is:
 
 Every catalog response is `Cache-Control: no-store`,
 `authority=inspection_only`, and `authorizesAction=false`; no local path is
-exposed. `/v1/state` and `/healthz` remain compatibility surfaces. This
-standalone CLI owns only the static card catalog: it does not read `Player.log`,
-current board/stash/selection, instance overrides, or issue ActionIntent. See
-the [catalog protocol](docs/catalog-protocol.md).
+exposed. `/v1/state` and `/healthz` remain compatibility surfaces. The HTTP
+service is read-only and contains no live match state. See the
+[catalog protocol](docs/catalog-protocol.md).
 
 ## Update
 
@@ -221,7 +243,7 @@ surface. Conventional commits drive release-please; merging a release PR builds
 Windows, Linux, Intel macOS, and Apple Silicon archives plus `SHA256SUMS`.
 
 Architecture decisions are recorded in
-[ADR-0001](docs/adr/0001-provider-cache-and-cua-boundary.md) and
+[ADR-0001](docs/adr/0001-provider-cache-boundary.md) and
 [ADR-0002](docs/adr/0002-local-game-data-provider.md).
 
 ## License and data

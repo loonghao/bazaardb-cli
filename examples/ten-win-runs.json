@@ -1,0 +1,22 @@
+{
+  "runs": [
+    {
+      "id": "example-1",
+      "wins": 10,
+      "hero": "Dooley",
+      "cards": ["Monitor Lizard", "Cog", "Chris Army Knife"]
+    },
+    {
+      "id": "example-2",
+      "wins": 10,
+      "hero": "Dooley",
+      "cards": ["Cog", "Monitor Lizard", "C.O.R.A"]
+    },
+    {
+      "id": "example-3",
+      "wins": 9,
+      "hero": "Dooley",
+      "cards": ["Monitor Lizard", "Cog"]
+    }
+  ]
+}

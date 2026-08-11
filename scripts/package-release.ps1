@@ -24,8 +24,6 @@ try {
     Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $stage $binaryName)
     Copy-Item -LiteralPath (Join-Path $repoRoot "README.md") -Destination $stage
     Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination $stage
-    New-Item -ItemType Directory -Path (Join-Path $stage "profiles") | Out-Null
-    Copy-Item -LiteralPath (Join-Path $repoRoot "profiles/bazaardb-cua.json") -Destination (Join-Path $stage "profiles")
     Set-Content -LiteralPath (Join-Path $stage "VERSION") -Value $Version -NoNewline
 
     if ($isWindowsTarget) {
