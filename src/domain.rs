@@ -44,13 +44,17 @@ pub struct ApiResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SearchCardsRequest {
+    #[serde(alias = "q")]
     pub query: Option<String>,
     pub category: String,
     pub page: u32,
     pub limit: u32,
+    #[serde(alias = "sortBy")]
     pub sort_by: String,
     pub order: String,
+    #[serde(alias = "showUnobtainable")]
     pub show_unobtainable: bool,
 }
 

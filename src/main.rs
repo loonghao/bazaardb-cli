@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -10,7 +11,12 @@ use bazaardb_cli::domain::{
 };
 use bazaardb_cli::infrastructure::{DEFAULT_API_BASE, GithubUpdater};
 use bazaardb_cli::server::{ServeConfig, loopback_socket};
-use bazaardb_cli::{BazaarService, CacheStore, ParseGateway, ParseGatewayConfig};
+use bazaardb_cli::{
+    BazaarService, CacheStore, CanonicalGameIdentifier, CanonicalUuid, CardTier, CatalogService,
+    GameDataGateway, GameDataGatewayConfig, ParseGateway, ParseGatewayConfig, ResolveBatchRequest,
+    ResolveBatchResponse, ResolveCardRequest, ResolveJsonlRecord, ResolveMode,
+    detect_game_data_path,
+};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
 use serde::Serialize;
@@ -20,6 +26,14 @@ use tracing_subscriber::EnvFilter;
 #[derive(Debug, Parser)]
 #[command(name = "bazaardb-cli", version, about)]
 struct Cli {
+    /// Data provider. Auto prefers the installed game's read-only GameData.db.
+    #[arg(long, env = "BAZAARDB_PROVIDER", value_enum, default_value_t = ProviderArg::Auto, global = true)]
+    provider: ProviderArg,
+
+    /// Explicit path to the game's cached GameData.db.
+    #[arg(long, env = "BAZAARDB_GAME_DATA", global = true)]
+    game_data: Option<PathBuf>,
+
     #[arg(long, env = "BAZAARDB_API_BASE", default_value = DEFAULT_API_BASE, global = true)]
     api_base: String,
 
@@ -37,6 +51,13 @@ struct Cli {
 
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ProviderArg {
+    Auto,
+    GameData,
+    Parse,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -69,6 +90,8 @@ enum Command {
     Search(SearchArgs),
     /// Fetch one complete card by its name.
     Get(GetArgs),
+    /// Resolve 1-64 canonical template UUIDs at explicit tiers.
+    Resolve(ResolveArgs),
     /// List every endpoint supported by the configured provider.
     Endpoints,
     /// Inspect or maintain the local response cache.
@@ -128,6 +151,67 @@ impl From<SearchArgs> for SearchCardsRequest {
 #[derive(Debug, Args)]
 struct GetArgs {
     name: String,
+}
+
+#[derive(Debug, Args)]
+struct ResolveArgs {
+    /// Fail the whole batch on incomplete data, or return explicit partial results.
+    #[arg(long, value_enum, default_value_t = ResolveModeArg::Strict)]
+    mode: ResolveModeArg,
+
+    /// Include the complete source card JSON in each resolved result.
+    #[arg(long)]
+    include_raw_template: bool,
+
+    /// Include every enchantment definition instead of one requested exact definition.
+    #[arg(long)]
+    include_all_enchantments: bool,
+
+    /// One or more TEMPLATE_UUID@TIER[#ENCHANTMENT_ID] values, preserving input order.
+    #[arg(value_name = "TEMPLATE_UUID@TIER[#ENCHANTMENT_ID]", required = true, num_args = 1..=64)]
+    requests: Vec<ResolveSpec>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ResolveModeArg {
+    Strict,
+    Partial,
+}
+
+impl From<ResolveModeArg> for ResolveMode {
+    fn from(value: ResolveModeArg) -> Self {
+        match value {
+            ResolveModeArg::Strict => Self::Strict,
+            ResolveModeArg::Partial => Self::Partial,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ResolveSpec {
+    template_id: CanonicalUuid,
+    tier: CardTier,
+    enchantment_id: Option<CanonicalGameIdentifier>,
+}
+
+impl FromStr for ResolveSpec {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        let (card, enchantment_id) = value
+            .split_once('#')
+            .map_or((value, None), |(card, enchantment)| {
+                (card, Some(enchantment))
+            });
+        let (template_id, tier) = card
+            .split_once('@')
+            .context("resolve value must use TEMPLATE_UUID@TIER[#ENCHANTMENT_ID]")?;
+        Ok(Self {
+            template_id: template_id.parse()?,
+            tier: tier.parse()?,
+            enchantment_id: enchantment_id.map(str::parse).transpose()?,
+        })
+    }
 }
 
 #[derive(Debug, Args)]
@@ -226,11 +310,16 @@ async fn main() {
 async fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()))
+        .with_ansi(std::io::stderr().is_terminal())
         .with_writer(std::io::stderr)
         .try_init()
         .ok();
     let cli = Cli::parse();
     let cache_path = cache_path(cli.cache_dir.as_deref())?;
+    let catalog_cache_dir = cache_path
+        .parent()
+        .context("response cache path has no parent")?
+        .join("catalog");
     let cache = CacheStore::open(&cache_path)?;
 
     match cli.command {
@@ -240,7 +329,7 @@ async fn run() -> Result<()> {
                 &Envelope {
                     schema_version: OUTPUT_SCHEMA_VERSION,
                     command: "endpoints",
-                    source: "parse.bot/bazaardb-gg-api",
+                    source: "bazaardb-cli",
                     cache: None,
                     data: serde_json::json!({
                         "endpoints": [
@@ -249,8 +338,19 @@ async fn run() -> Result<()> {
                                 "commands": ["search"],
                                 "categories": ["all", "items", "skills", "merchants", "trainers", "monsters", "events"]
                             },
-                            {"name": "get_card", "commands": ["get"]}
-                        ]
+                            {"name": "get_card", "commands": ["get"]},
+                            {
+                                "name": "resolve_catalog",
+                                "commands": ["resolve"],
+                                "batch": {"minimum": 1, "maximum": 64},
+                                "requires": "game-data"
+                            }
+                        ],
+                        "providers": {
+                            "auto": "Require and use the installed game's read-only GameData.db",
+                            "game-data": "Read The Bazaar's local SQLite card catalog without an API key",
+                            "parse": "Use the documented BazaarDB Parse API with an API key"
+                        }
                     }),
                 },
                 cli.output,
@@ -260,15 +360,9 @@ async fn run() -> Result<()> {
         _ => {}
     }
 
-    let api_key = cli.api_key.or_else(|| std::env::var("PARSE_API_KEY").ok());
-    let gateway = ParseGateway::new(ParseGatewayConfig {
-        api_base: cli.api_base,
-        api_key,
-        cache,
-        stale_for: Duration::from_secs(7 * 24 * 60 * 60),
-        max_retries: 3,
-    })?;
-    let service = BazaarService::new(Arc::new(gateway));
+    let services = create_services(&cli, cache, catalog_cache_dir)?;
+    let service = services.cards.clone();
+    let source = services.source;
 
     match cli.command {
         Command::Search(args) => {
@@ -286,7 +380,7 @@ async fn run() -> Result<()> {
                 &Envelope {
                     schema_version: OUTPUT_SCHEMA_VERSION,
                     command: "search",
-                    source: "parse.bot/bazaardb-gg-api",
+                    source,
                     cache: Some(CacheSummary::from_dispositions(cache)),
                     data: result,
                 },
@@ -301,12 +395,33 @@ async fn run() -> Result<()> {
                 &Envelope {
                     schema_version: OUTPUT_SCHEMA_VERSION,
                     command: "get",
-                    source: "parse.bot/bazaardb-gg-api",
+                    source,
                     cache: Some(CacheSummary::from_dispositions([cache])),
                     data: card,
                 },
                 cli.output,
             )
+        }
+        Command::Resolve(args) => {
+            let catalog = services
+                .catalog
+                .context("resolve requires the game-data provider; use --provider game-data")?;
+            let request = ResolveBatchRequest {
+                requests: args
+                    .requests
+                    .into_iter()
+                    .map(|request| ResolveCardRequest {
+                        template_id: request.template_id,
+                        tier: request.tier,
+                        enchantment_id: request.enchantment_id,
+                    })
+                    .collect(),
+                mode: args.mode.into(),
+                include_raw_template: args.include_raw_template,
+                include_all_enchantments: args.include_all_enchantments,
+            };
+            let response = catalog.resolve(&request).await?;
+            print_resolve(&response, cli.output)
         }
         Command::Serve(args) => {
             if !(5..=86_400).contains(&args.refresh_seconds) {
@@ -319,8 +434,12 @@ async fn run() -> Result<()> {
                 ..SearchCardsRequest::default()
             };
             request.validate()?;
+            let catalog = services.catalog.context(
+                "serve requires the game-data provider; Parse cannot own the local catalog API",
+            )?;
             bazaardb_cli::server::serve(
                 service,
+                catalog,
                 ServeConfig {
                     listen: loopback_socket(args.port),
                     request,
@@ -331,6 +450,77 @@ async fn run() -> Result<()> {
         }
         Command::Cache(_) | Command::Endpoints | Command::Update(_) => unreachable!(),
     }
+}
+
+struct SelectedServices {
+    cards: BazaarService,
+    catalog: Option<CatalogService>,
+    source: &'static str,
+}
+
+fn create_services(
+    cli: &Cli,
+    cache: CacheStore,
+    catalog_cache_dir: PathBuf,
+) -> Result<SelectedServices> {
+    let provider = match cli.provider {
+        ProviderArg::GameData => ProviderSelection::GameData(
+            cli.game_data
+                .clone()
+                .or_else(detect_game_data_path)
+                .context(
+                    "GameData.db was not found; launch The Bazaar once or pass --game-data PATH",
+                )?,
+        ),
+        ProviderArg::Parse => ProviderSelection::Parse,
+        ProviderArg::Auto => ProviderSelection::GameData(
+            cli.game_data
+                .clone()
+                .or_else(detect_game_data_path)
+                .context(
+                    "GameData.db was not found; launch The Bazaar once, pass --game-data PATH, or explicitly select --provider parse",
+                )?,
+        ),
+    };
+
+    match provider {
+        ProviderSelection::GameData(database_path) => {
+            let gateway = Arc::new(GameDataGateway::new(GameDataGatewayConfig {
+                database_path,
+                catalog_cache_dir,
+                cache,
+            })?);
+            tracing::debug!(path = %gateway.database_path().display(), "using local GameData.db provider");
+            Ok(SelectedServices {
+                cards: BazaarService::new(gateway.clone()),
+                catalog: Some(CatalogService::new(gateway)),
+                source: "the-bazaar/GameData.db",
+            })
+        }
+        ProviderSelection::Parse => {
+            let api_key = cli
+                .api_key
+                .clone()
+                .or_else(|| std::env::var("PARSE_API_KEY").ok());
+            let gateway = ParseGateway::new(ParseGatewayConfig {
+                api_base: cli.api_base.clone(),
+                api_key,
+                cache,
+                stale_for: Duration::from_secs(7 * 24 * 60 * 60),
+                max_retries: 3,
+            })?;
+            Ok(SelectedServices {
+                cards: BazaarService::new(Arc::new(gateway)),
+                catalog: None,
+                source: "parse.bot/bazaardb-gg-api",
+            })
+        }
+    }
+}
+
+enum ProviderSelection {
+    GameData(PathBuf),
+    Parse,
 }
 
 async fn execute_cache(cache: CacheStore, args: CacheArgs, output: OutputFormat) -> Result<()> {
@@ -433,9 +623,18 @@ fn print_cards(cards: &[Value], output: OutputFormat) -> Result<()> {
                 println!(
                     "{}\t{}\t{}\t{}",
                     field(card, &["name", "Name", "title"]),
-                    field(card, &["type", "Type"]),
+                    field(card, &["type", "Type", "cardType"]),
                     field(card, &["size", "Size"]),
-                    field(card, &["base_tier", "baseTier", "BaseTier"]),
+                    field(
+                        card,
+                        &[
+                            "base_tier",
+                            "baseTier",
+                            "BaseTier",
+                            "StartingTier",
+                            "startingTier",
+                        ],
+                    ),
                 );
             }
         }
@@ -444,12 +643,55 @@ fn print_cards(cards: &[Value], output: OutputFormat) -> Result<()> {
     Ok(())
 }
 
+fn print_resolve(response: &ResolveBatchResponse, output: OutputFormat) -> Result<()> {
+    match output {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(response)?),
+        OutputFormat::Jsonl => {
+            for result in &response.results {
+                println!(
+                    "{}",
+                    serde_json::to_string(&ResolveJsonlRecord {
+                        identity: &response.identity,
+                        result,
+                    })?
+                );
+            }
+        }
+        OutputFormat::Table => {
+            println!("TEMPLATE_ID\tTIER\tFOUND\tCOMPLETE\tNAME");
+            for result in &response.results {
+                let name = result
+                    .template
+                    .as_ref()
+                    .and_then(|template| template.name.clone())
+                    .unwrap_or_else(|| "-".to_owned());
+                println!(
+                    "{}\t{}\t{}\t{}\t{}",
+                    result.template_id, result.tier, result.found, result.complete, name
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn field(value: &Value, names: &[&str]) -> String {
-    names
+    let direct = names
         .iter()
         .find_map(|name| value.get(name))
         .and_then(Value::as_str)
-        .unwrap_or("-")
+        .map(str::to_owned);
+    direct
+        .or_else(|| {
+            names.contains(&"name").then(|| {
+                value
+                    .pointer("/Localization/Title/Text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("-")
+                    .to_owned()
+            })
+        })
+        .unwrap_or_else(|| "-".to_owned())
         .replace(['\t', '\n', '\r'], " ")
 }
 

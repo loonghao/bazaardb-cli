@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Superseded in part by [ADR-0002](0002-local-game-data-provider.md). The cache,
+CUA, schema-flexibility, and private-endpoint boundaries remain accepted.
 
 ## Context
 
@@ -29,9 +30,9 @@ bounded, read-only loopback HTTP JSON state source.
   credentials never enter keys or values.
 - Use endpoint-specific TTLs, explicit `use`, `refresh`, and `offline` modes,
   and a seven-day stale-if-error window.
-- Expose CUA state only through `127.0.0.1:7878/v1/state`, with schema version,
-  monotonic tick, ETag support, response-size bounds in the profile, and no
-  mutation routes.
+- Expose CUA compatibility state through `127.0.0.1:7878/v1/state`, with schema
+  version, monotonic tick, ETag support, response-size bounds in the profile,
+  and no mutation routes. ADR-0002 adds the canonical static catalog routes.
 - Limit the typed provider surface to the two documented endpoints. Do not
   bypass private website tokens or expose an arbitrary-host HTTP proxy.
 
@@ -49,7 +50,8 @@ bounded, read-only loopback HTTP JSON state source.
 
 ### Negative
 
-- A valid provider API key is required for a cold cache.
+- A valid provider API key is required only when the explicit Parse provider is
+  selected. The default local provider needs no credential.
 - The third-party provider can be unavailable even while BazaarDB's website is
   healthy.
 - A future official API requires another adapter and contract tests.
