@@ -11,6 +11,7 @@ pub use catalog::{
     CatalogStatus, ComponentResolution, ComponentShape, ComponentStatus,
     MAX_CATALOG_RESPONSE_BYTES, PayloadIdConsistency, RESOLVER_VERSION, ResolveBatchRequest,
     ResolveBatchResponse, ResolveCardRequest, ResolveJsonlRecord, ResolveMode, ResolvedCard,
+    TooltipResolution, TooltipShape,
 };
 pub use domain::{
     ApiResponse, CacheDisposition, CacheMode, GetCardRequest, SearchCardsPage, SearchCardsRequest,

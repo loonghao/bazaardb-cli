@@ -9,7 +9,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 pub const CATALOG_SCHEMA_VERSION: &str = "1.0.0";
-pub const RESOLVER_VERSION: &str = "1.0.0";
+pub const RESOLVER_VERSION: &str = "1.1.0";
 pub const MAX_RESOLVE_BATCH: usize = 64;
 pub const MAX_CATALOG_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 pub const INSPECTION_AUTHORITY: &str = "inspection_only";
@@ -306,6 +306,7 @@ pub struct ResolveJsonlRecord<'a> {
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedCard {
     pub resolution_key: String,
+    pub template_content_id: Option<String>,
     pub template_id: CanonicalUuid,
     pub found: bool,
     pub complete: bool,
@@ -329,6 +330,7 @@ pub struct ResolvedCard {
 #[serde(rename_all = "camelCase")]
 pub struct CatalogCardProjection {
     pub template_id: String,
+    pub template_content_id: String,
     pub payload_id_consistency: PayloadIdConsistency,
     pub complete: bool,
     pub missing: Vec<String>,
@@ -340,6 +342,7 @@ pub struct CatalogCardProjection {
     pub size: Option<String>,
     pub tags: Vec<String>,
     pub hidden_tags: Vec<String>,
+    pub tooltips: TooltipResolution,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -348,6 +351,25 @@ pub enum PayloadIdConsistency {
     Matching,
     Absent,
     Mismatch,
+    Malformed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TooltipResolution {
+    pub shape: TooltipShape,
+    pub values: Vec<String>,
+    pub missing: Vec<String>,
+    pub malformed: Vec<String>,
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TooltipShape {
+    Absent,
+    Null,
+    Array,
     Malformed,
 }
 

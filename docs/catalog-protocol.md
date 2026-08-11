@@ -1,6 +1,6 @@
 # Static catalog protocol
 
-Protocol versions: `catalogSchemaVersion=1.0.0`, `resolverVersion=1.0.0`.
+Protocol versions: `catalogSchemaVersion=1.0.0`, `resolverVersion=1.1.0`.
 
 `bazaardb-cli` is the owner of the normalized static The Bazaar card catalog.
 The protocol is designed for replaceable companion adapters and deterministic
@@ -13,7 +13,7 @@ Every successful response carries:
 ```json
 {
   "catalogSchemaVersion": "1.0.0",
-  "resolverVersion": "1.0.0",
+  "resolverVersion": "1.1.0",
   "databaseSha256": "actual lowercase SHA-256",
   "contentId": "sha256:canonical-catalog-and-contract-hash",
   "cacheKey": "catalog/...",
@@ -71,7 +71,9 @@ Rules:
   conflicts or malformed payload IDs make strict resolve fail closed.
 - For items, template type, starting/requested tier, size, tags, and accumulated
   attributes are required. Version and tooltips are optional, but wrong present
-  shapes are malformed.
+  shapes are malformed. `tooltips` preserves
+  `Localization.Tooltips[].Content.Text` order and carries typed shape,
+  missing, malformed, and completeness fields.
 - Attributes accumulate from the starting tier through the requested tier;
   later layers overwrite the same attribute while sparse earlier values remain.
 - Ability and aura IDs retain stable first-seen order. Their definition shape,
@@ -93,6 +95,12 @@ resolve/<contentId>/<templateId>/<tier>/enchantment/<id|not_requested|all>
 This key intentionally excludes live instance overrides. A companion may key
 its own projection with the same tuple.
 
+Every compact card also carries `templateContentId`. It hashes the authoritative
+row ID, canonical full static template definition, catalog schema, and resolver
+version. Search and resolve therefore expose the same digest for the same
+template generation; related static-definition or resolver changes produce a
+new digest without requiring `rawTemplate`.
+
 ## Errors
 
 Errors use a stable envelope and preserve inspection-only authority:
@@ -100,7 +108,7 @@ Errors use a stable envelope and preserve inspection-only authority:
 ```json
 {
   "catalogSchemaVersion": "1.0.0",
-  "resolverVersion": "1.0.0",
+  "resolverVersion": "1.1.0",
   "authority": "inspection_only",
   "authorizesAction": false,
   "error": {

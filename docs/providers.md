@@ -106,6 +106,12 @@ tier attributes are required. Version and tooltips are optional, but a present
 field with the wrong shape is malformed. A payload `Id` conflict never changes
 lookup identity and makes strict resolve fail closed.
 
+Compact search and resolve projections include ordered normalized tooltip text
+with typed shape/missing/malformed status. They also include a per-template
+`templateContentId` over the authoritative row ID and canonical full static
+definition, allowing companion caches to verify template integrity without raw
+templates or live instance overrides.
+
 Per-card `enchantmentId` uses exact, case-sensitive game identifiers. Without
 one, enchantments report `not_requested`. Only the selected definition is
 returned unless `includeAllEnchantments=true`; raw templates similarly require

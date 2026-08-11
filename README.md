@@ -117,6 +117,10 @@ Each result includes a `resolutionKey` over `(contentId, templateId, tier,
 enchantment selector)`. No enchantment request is reported as `not_requested`
 and never serializes every enchantment definition.
 
+Compact search and resolve cards include ordered normalized tooltip text and a
+`templateContentId` digest of the canonical static template definition. Agents
+can classify effects and fence per-template caches without requesting raw JSON.
+
 ## Cache
 
 The cache directory has two stores:

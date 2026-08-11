@@ -300,7 +300,13 @@ fn create_game_data(path: &Path) {
             "Tags": ["Loot"],
             "HiddenTags": ["CritReference"],
             "SpawningEligibility": "Always",
-            "Localization": {"Title": {"Text": "Eagle Talisman"}},
+            "Localization": {
+                "Title": {"Text": "Eagle Talisman"},
+                "Tooltips": [
+                    {"Content": {"Text": "When you sell this, gain 5 Gold"}},
+                    {"Content": {"Text": "At the start of each day, get a Small item"}}
+                ]
+            },
             "Tiers": {
                 "Bronze": {
                     "Attributes": {"AmmoMax": 5, "Damage": 10},
@@ -379,6 +385,39 @@ fn create_single_card_game_data(path: &Path, row_id: &str, card: &serde_json::Va
         .unwrap();
 }
 
+fn create_sixty_four_card_game_data(path: &Path) -> Vec<String> {
+    let connection = Connection::open(path).unwrap();
+    connection
+        .execute_batch("CREATE TABLE cards (Id TEXT NOT NULL PRIMARY KEY, Data BLOB NOT NULL);")
+        .unwrap();
+    let ids = (0..64)
+        .map(|index| format!("00000000-0000-0000-0001-{index:012x}"))
+        .collect::<Vec<_>>();
+    for (index, id) in ids.iter().enumerate() {
+        let card = json!({
+            "Id": id,
+            "InternalName": format!("Batch Card {index}"),
+            "Type": "Item",
+            "Version": "1.0.0",
+            "StartingTier": "Bronze",
+            "Size": "Small",
+            "Tags": ["Fixture"],
+            "Localization": {
+                "Title": {"Text": format!("Batch Card {index}")},
+                "Tooltips": [{"Content": {"Text": format!("Tooltip {index}")}}]
+            },
+            "Tiers": {"Bronze": {"Attributes": {"Damage": index}}}
+        });
+        connection
+            .execute(
+                "INSERT INTO cards (Id, Data) VALUES (?1, ?2)",
+                params![id, serde_json::to_vec(&card).unwrap()],
+            )
+            .unwrap();
+    }
+    ids
+}
+
 fn resolve_process(database: &Path, cache: &Path) -> std::process::Output {
     ProcessCommand::new(env!("CARGO_BIN_EXE_bazaardb-cli"))
         .env("RUST_LOG", "bazaardb_cli::catalog_cache=info")
@@ -412,7 +451,12 @@ fn replace_snapshot_header(path: &Path, field: &str, replacement: &str) {
     let mut bytes = fs::read(path).unwrap();
     let length = u32::from_le_bytes(bytes[16..20].try_into().unwrap()) as usize;
     let header = std::str::from_utf8(&bytes[20..20 + length]).unwrap();
-    let old = format!("\"{field}\":\"1.0.0\"");
+    let current = if field == "resolverVersion" {
+        "1.1.0"
+    } else {
+        "1.0.0"
+    };
+    let old = format!("\"{field}\":\"{current}\"");
     let new = format!("\"{field}\":\"{replacement}\"");
     assert_eq!(old.len(), new.len());
     let updated = header.replacen(&old, &new, 1);
@@ -830,6 +874,17 @@ fn resolve_is_compact_stable_and_enchantment_aware() {
     assert_eq!(value["results"][0]["attributes"]["values"]["Damage"], 20);
     assert_eq!(value["results"][0]["enchantments"]["ids"], json!(["Fiery"]));
     assert_eq!(
+        value["results"][0]["templateContentId"],
+        value["results"][0]["template"]["templateContentId"]
+    );
+    assert_eq!(
+        value["results"][0]["template"]["tooltips"]["values"],
+        json!([
+            "When you sell this, gain 5 Gold",
+            "At the start of each day, get a Small item"
+        ])
+    );
+    assert_eq!(
         value["results"][1]["enchantments"]["status"],
         "not_requested"
     );
@@ -855,6 +910,44 @@ fn resolve_is_compact_stable_and_enchantment_aware() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown enchantment"));
+}
+
+#[test]
+fn sixty_four_card_compact_batch_stays_below_response_cap() {
+    let directory = TempDir::new().unwrap();
+    let database = directory.path().join("GameData.db");
+    let cache = directory.path().join("cache");
+    let ids = create_sixty_four_card_game_data(&database);
+    let mut arguments = vec![
+        "--provider".to_owned(),
+        "game-data".to_owned(),
+        "--game-data".to_owned(),
+        database.to_string_lossy().into_owned(),
+        "--cache-dir".to_owned(),
+        cache.to_string_lossy().into_owned(),
+        "resolve".to_owned(),
+    ];
+    arguments.extend(ids.iter().map(|id| format!("{id}@Bronze")));
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_bazaardb-cli"))
+        .args(arguments)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.len() < 8 * 1024 * 1024);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["results"].as_array().unwrap().len(), 64);
+    assert!(
+        value["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|result| result.get("rawTemplate").is_none()
+                && result["templateContentId"].as_str().is_some())
+    );
 }
 
 #[tokio::test]
@@ -906,7 +999,7 @@ async fn catalog_api_is_read_only_compact_and_fail_closed() {
     assert_eq!(status["authority"], "inspection_only");
     assert_eq!(status["authorizesAction"], false);
     assert_eq!(status["catalogSchemaVersion"], "1.0.0");
-    assert_eq!(status["resolverVersion"], "1.0.0");
+    assert_eq!(status["resolverVersion"], "1.1.0");
     assert!(
         !serde_json::to_string(&status)
             .unwrap()
@@ -929,6 +1022,11 @@ async fn catalog_api_is_read_only_compact_and_fail_closed() {
     assert_eq!(search["authorizesAction"], false);
     assert_eq!(search["cards"][0]["name"], "Eagle Talisman");
     assert!(search["cards"][0].get("future_field").is_none());
+    let searched_template_content_id = search["cards"][0]["templateContentId"].clone();
+    assert_eq!(
+        search["cards"][0]["tooltips"]["values"][0],
+        "When you sell this, gain 5 Gold"
+    );
 
     let resolved = client
         .post(format!("{base}/resolve"))
@@ -954,6 +1052,10 @@ async fn catalog_api_is_read_only_compact_and_fail_closed() {
     assert_eq!(
         resolved["results"][0]["enchantments"]["ids"],
         json!(["Fiery"])
+    );
+    assert_eq!(
+        resolved["results"][0]["templateContentId"],
+        searched_template_content_id
     );
 
     let unknown = client

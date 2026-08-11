@@ -46,6 +46,9 @@ endpoints.
   fails strict resolution without changing lookup/sort identity.
 - Preserve raw card JSON for explicit `get` and `includeRawTemplate` operations.
   Use compact projections for default agent search and batch resolve responses.
+- Include ordered normalized tooltip text and a per-template content digest in
+  compact projections so consumers do not need raw templates for effect
+  classification or cache integrity.
 - Derive categories from canonical game fields: card `Type`, the `Merchant`
   tag, and trainer encounter identity. Treat this mapping as adapter policy,
   not a new domain schema.

@@ -13,9 +13,10 @@ use tokio::sync::Mutex;
 
 use crate::application::{ApiGateway, CatalogGateway};
 use crate::catalog::{
-    AttributeResolution, CanonicalGameIdentifier, CanonicalUuid, CardTier, CatalogCardProjection,
-    CatalogIdentity, CatalogSearchResponse, CatalogStatus, ComponentResolution, ComponentShape,
-    ComponentStatus, PayloadIdConsistency, ResolveBatchRequest, ResolveBatchResponse, ResolvedCard,
+    AttributeResolution, CATALOG_SCHEMA_VERSION, CanonicalGameIdentifier, CanonicalUuid, CardTier,
+    CatalogCardProjection, CatalogIdentity, CatalogSearchResponse, CatalogStatus,
+    ComponentResolution, ComponentShape, ComponentStatus, PayloadIdConsistency, RESOLVER_VERSION,
+    ResolveBatchRequest, ResolveBatchResponse, ResolvedCard, TooltipResolution, TooltipShape,
 };
 use crate::domain::{
     ApiResponse, CacheDisposition, CacheMode, SearchCardsPage, SearchCardsRequest,
@@ -519,8 +520,12 @@ fn project_card(row_id: &str, card: &Value) -> CatalogCardProjection {
     let hidden_tags =
         optional_string_array(card, "HiddenTags", "template.hiddenTags", &mut malformed);
     validate_optional_array(card, "Tooltips", "template.tooltips", &mut malformed);
+    let tooltips = resolve_tooltips(card);
+    missing.extend(tooltips.missing.iter().cloned());
+    malformed.extend(tooltips.malformed.iter().cloned());
     CatalogCardProjection {
         template_id: row_id.to_owned(),
+        template_content_id: template_content_id(row_id, card),
         payload_id_consistency,
         complete: missing.is_empty() && malformed.is_empty(),
         missing,
@@ -534,6 +539,114 @@ fn project_card(row_id: &str, card: &Value) -> CatalogCardProjection {
         size,
         tags,
         hidden_tags,
+        tooltips,
+    }
+}
+
+fn template_content_id(row_id: &str, card: &Value) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"bazaardb-cli/template-definition\0");
+    digest.update(CATALOG_SCHEMA_VERSION.as_bytes());
+    digest.update(b"\0");
+    digest.update(RESOLVER_VERSION.as_bytes());
+    digest.update(b"\0");
+    digest.update(row_id.as_bytes());
+    digest.update(b"\0");
+    digest.update(serde_json::to_vec(card).expect("serializing a serde_json::Value cannot fail"));
+    format!(
+        "sha256:{}",
+        digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
+}
+
+fn resolve_tooltips(card: &Value) -> TooltipResolution {
+    let localization = match card.get("Localization") {
+        None => {
+            return TooltipResolution {
+                shape: TooltipShape::Absent,
+                values: Vec::new(),
+                missing: Vec::new(),
+                malformed: Vec::new(),
+                complete: true,
+            };
+        }
+        Some(Value::Object(localization)) => localization,
+        Some(_) => {
+            return TooltipResolution {
+                shape: TooltipShape::Malformed,
+                values: Vec::new(),
+                missing: Vec::new(),
+                malformed: vec!["template.localization:expected_object".to_owned()],
+                complete: false,
+            };
+        }
+    };
+    let tooltips = match localization.get("Tooltips") {
+        None => {
+            return TooltipResolution {
+                shape: TooltipShape::Absent,
+                values: Vec::new(),
+                missing: Vec::new(),
+                malformed: Vec::new(),
+                complete: true,
+            };
+        }
+        Some(Value::Null) => {
+            return TooltipResolution {
+                shape: TooltipShape::Null,
+                values: Vec::new(),
+                missing: Vec::new(),
+                malformed: Vec::new(),
+                complete: true,
+            };
+        }
+        Some(Value::Array(tooltips)) => tooltips,
+        Some(_) => {
+            return TooltipResolution {
+                shape: TooltipShape::Malformed,
+                values: Vec::new(),
+                missing: Vec::new(),
+                malformed: vec!["template.tooltips:expected_array".to_owned()],
+                complete: false,
+            };
+        }
+    };
+    let mut values = Vec::new();
+    let mut missing = Vec::new();
+    let mut malformed = Vec::new();
+    for (index, tooltip) in tooltips.iter().enumerate() {
+        let Some(tooltip) = tooltip.as_object() else {
+            malformed.push(format!("template.tooltips[{index}]:expected_object"));
+            continue;
+        };
+        let Some(content) = tooltip.get("Content") else {
+            missing.push(format!("template.tooltips[{index}].content"));
+            continue;
+        };
+        let Some(content) = content.as_object() else {
+            malformed.push(format!(
+                "template.tooltips[{index}].content:expected_object"
+            ));
+            continue;
+        };
+        match content.get("Text") {
+            Some(Value::String(text)) => values.push(text.clone()),
+            Some(_) => malformed.push(format!(
+                "template.tooltips[{index}].content.text:expected_string"
+            )),
+            None => missing.push(format!("template.tooltips[{index}].content.text")),
+        }
+    }
+    TooltipResolution {
+        shape: TooltipShape::Array,
+        values,
+        complete: missing.is_empty() && malformed.is_empty(),
+        missing,
+        malformed,
     }
 }
 
@@ -549,6 +662,7 @@ fn resolve_card(
     let Some(card) = card else {
         return ResolvedCard {
             resolution_key,
+            template_content_id: None,
             template_id,
             found: false,
             complete: false,
@@ -605,6 +719,7 @@ fn resolve_card(
     );
     missing.extend(projection.missing.iter().cloned());
     malformed.extend(projection.malformed.iter().cloned());
+    let template_content_id = projection.template_content_id.clone();
     let complete = missing.is_empty()
         && malformed.is_empty()
         && projection.complete
@@ -615,6 +730,7 @@ fn resolve_card(
 
     ResolvedCard {
         resolution_key,
+        template_content_id: Some(template_content_id),
         template_id,
         found: true,
         complete,
@@ -1490,5 +1606,78 @@ mod tests {
         );
         assert!(!malformed.complete);
         assert_eq!(malformed.enchantments.malformed, ["Broken:null"]);
+    }
+
+    #[test]
+    fn compact_projection_preserves_golden_tooltips_and_hashes_static_definition() {
+        let template_id = "0022c409-c839-41e8-8022-65a407457dfe";
+        let card = json!({
+            "Id": template_id,
+            "InternalName": "Tooltip Fixture",
+            "Type": "Item",
+            "Version": "1.0.0",
+            "StartingTier": "Bronze",
+            "Size": "Small",
+            "Tags": ["Tool"],
+            "Localization": {
+                "Title": {"Text": "Tooltip Fixture"},
+                "Tooltips": [
+                    {"Content": {"Text": "When you sell this, gain 5 Gold"}},
+                    {"Content": {"Text": "At the start of each day, get a Small item"}}
+                ]
+            },
+            "Tiers": {"Bronze": {"Attributes": {}}}
+        });
+        let first = project_card(template_id, &card);
+        let second = project_card(template_id, &card);
+        assert!(first.complete);
+        assert_eq!(first.tooltips.shape, TooltipShape::Array);
+        assert_eq!(
+            first.tooltips.values,
+            [
+                "When you sell this, gain 5 Gold",
+                "At the start of each day, get a Small item"
+            ]
+        );
+        assert_eq!(first.template_content_id, second.template_content_id);
+
+        let mut changed = card.clone();
+        changed["Localization"]["Tooltips"][0]["Content"]["Text"] =
+            json!("When you sell this, gain 6 Gold");
+        let changed = project_card(template_id, &changed);
+        assert_ne!(first.template_content_id, changed.template_content_id);
+    }
+
+    #[test]
+    fn compact_projection_reports_tooltip_missing_and_malformed_entries() {
+        let template_id = "0022c409-c839-41e8-8022-65a407457dfe";
+        let card = json!({
+            "Id": template_id,
+            "Type": "Item",
+            "StartingTier": "Bronze",
+            "Size": "Small",
+            "Tags": [],
+            "Localization": {
+                "Tooltips": [
+                    {"Content": {}},
+                    {"Content": {"Text": 42}},
+                    "wrong"
+                ]
+            },
+            "Tiers": {"Bronze": {"Attributes": {}}}
+        });
+        let projection = project_card(template_id, &card);
+        assert!(!projection.complete);
+        assert_eq!(
+            projection.tooltips.missing,
+            ["template.tooltips[0].content.text"]
+        );
+        assert_eq!(
+            projection.tooltips.malformed,
+            [
+                "template.tooltips[1].content.text:expected_string",
+                "template.tooltips[2]:expected_object"
+            ]
+        );
     }
 }
