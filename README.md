@@ -1,7 +1,7 @@
 # bazaardb-cli
 
 Fast, no-key The Bazaar card queries from the game's read-only `GameData.db`,
-with an optional BazaarDB API provider, durable response caching, a DCC CUA
+with reviewed BazaarDB reference aliases, durable bounded caching, a DCC CUA
 profile bridge, a content-addressed static catalog, and verified self-update.
 
 `bazaardb-cli` follows the same data path as
@@ -98,8 +98,10 @@ bazaardb-cli --output table search sword
 The CLI loads local SQLite data on a blocking worker, shares the in-memory
 snapshot across concurrent page requests, and applies bounded concurrency.
 
-`resolve` accepts 1-64 unique canonical template UUIDs and preserves input
-order. Strict whole-batch mode is the default: missing templates, tiers before
+`resolve` accepts 1-64 canonical template requests and preserves input order.
+Only duplicate `(templateId,tier,enchantment selector)` tuples are rejected;
+the same template at distinct tiers or selectors is valid. Strict whole-batch
+mode is the default: missing templates, tiers before
 the starting tier, unknown enchantments, and malformed definitions fail closed.
 Use `--mode partial` only when explicit partial results are acceptable.
 
@@ -120,6 +122,13 @@ and never serializes every enchantment definition.
 Compact search and resolve cards include ordered normalized tooltip text and a
 `templateContentId` digest of the canonical static template definition. Agents
 can classify effects and fence per-template caches without requesting raw JSON.
+The digest includes the catalog content fence so referenced cross-template
+static definitions cannot change unnoticed.
+
+The standalone catalog also owns reviewed `externalReferences` from
+`data/card-identities.json`. `externalIdentityContentId` versions this map
+independently from local GameData `contentId`; references remain optional
+inspection metadata and never override the installed game's definitions.
 
 ## Cache
 
@@ -129,7 +138,8 @@ The cache directory has two stores:
   Search responses expire after 15 minutes; complete cards expire after 6 hours.
 - The normalized static catalog uses an atomic, content-addressed snapshot with
   schema, resolver, database, payload, and content hashes. Warm CLI processes
-  load it without rehashing or reparsing `GameData.db`.
+  load it without rehashing or reparsing `GameData.db`. It retains at most three
+  generations for 30 days and 1 GiB total; rebuilds prune automatically.
 
 ```powershell
 bazaardb-cli cache status
@@ -146,6 +156,8 @@ redundant database hashing but never replaces the published hashes. Volatile
 `-shm` reader state is excluded. Snapshot writes use a flushed and synced temp
 file, atomic rename, payload verification, and automatic rebuild after
 corruption or contract mismatch.
+`cache status` reports catalog generation count and bytes; `cache prune` and
+`cache clear --yes` maintain both response and catalog stores.
 
 Response keys include the catalog cache key, endpoint, and sorted query
 parameters. Parse keys include the API base instead. Neither key includes a

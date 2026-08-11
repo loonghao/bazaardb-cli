@@ -48,7 +48,11 @@ endpoints.
   Use compact projections for default agent search and batch resolve responses.
 - Include ordered normalized tooltip text and a per-template content digest in
   compact projections so consumers do not need raw templates for effect
-  classification or cache integrity.
+  classification or cache integrity. Fence that digest with catalog content so
+  cross-template static dependencies invalidate safely.
+- Own a small reviewed BazaarDB identity map in the standalone CLI. Publish its
+  content ID separately from GameData identity and expose matches only as
+  provenance-bearing, non-authoritative `externalReferences`.
 - Derive categories from canonical game fields: card `Type`, the `Merchant`
   tag, and trainer encounter identity. Treat this mapping as adapter policy,
   not a new domain schema.
@@ -57,9 +61,12 @@ endpoints.
 - Expose a loopback-only read API at `/v1/catalog/status`, `/search`, and
   `/resolve`. Every response is inspection-only, non-authoritative for actions,
   no-store, and path-free.
-- Resolve 1-64 unique canonical template UUIDs with strict whole-batch failure,
-  cumulative tier attributes, typed component completeness, and bounded output.
+- Resolve 1-64 canonical template tuples with strict whole-batch failure,
+  cumulative tier attributes, object-only selected definitions, typed component
+  completeness, collision-free structured selectors, and bounded output.
   Resolve only the explicitly applied enchantment by default.
+- Bound persistent snapshots to three generations, 30 days, and 1 GiB; expose
+  count/bytes and lifecycle through status, automatic/manual prune, and clear.
 - Own static catalog data only. Player logs, live board/stash/selection,
   per-instance overrides, and ActionIntent remain outside this process.
 - Do not claim that local data includes BazaarDB's derived history, builds,

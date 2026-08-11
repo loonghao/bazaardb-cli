@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -17,10 +18,12 @@ use crate::catalog::{
     CatalogCardProjection, CatalogIdentity, CatalogSearchResponse, CatalogStatus,
     ComponentResolution, ComponentShape, ComponentStatus, PayloadIdConsistency, RESOLVER_VERSION,
     ResolveBatchRequest, ResolveBatchResponse, ResolvedCard, TooltipResolution, TooltipShape,
+    selector_key,
 };
 use crate::domain::{
     ApiResponse, CacheDisposition, CacheMode, SearchCardsPage, SearchCardsRequest,
 };
+use crate::external_identity::ExternalIdentityCatalog;
 
 use super::catalog_snapshot::{LoadedCatalog, NormalizedCard, database_stamp, load_or_rebuild};
 use super::{CacheEntry, CacheStore};
@@ -39,16 +42,19 @@ pub struct GameDataGateway {
     database_path: PathBuf,
     catalog_cache_dir: PathBuf,
     cache: CacheStore,
+    external_identities: Arc<ExternalIdentityCatalog>,
     generation: Mutex<Option<LoadedCatalog>>,
 }
 
 impl GameDataGateway {
     pub fn new(config: GameDataGatewayConfig) -> Result<Self> {
         let database_path = validate_database_path(&config.database_path)?;
+        let external_identities = Arc::new(ExternalIdentityCatalog::bundled()?);
         Ok(Self {
             database_path,
             catalog_cache_dir: config.catalog_cache_dir,
             cache: config.cache,
+            external_identities,
             generation: Mutex::new(None),
         })
     }
@@ -67,10 +73,16 @@ impl GameDataGateway {
 
         let database_path = self.database_path.clone();
         let catalog_cache_dir = self.catalog_cache_dir.clone();
+        let external_identity_content_id = self.external_identities.content_id().to_owned();
         let computed = tokio::task::spawn_blocking(move || {
             let mut attempt_stamp = stamp;
             for attempt in 0..3 {
-                match load_or_rebuild(&database_path, &catalog_cache_dir, attempt_stamp) {
+                match load_or_rebuild(
+                    &database_path,
+                    &catalog_cache_dir,
+                    attempt_stamp,
+                    &external_identity_content_id,
+                ) {
                     Ok(catalog) => return Ok(catalog),
                     Err(error)
                         if attempt < 2
@@ -123,7 +135,12 @@ impl GameDataGateway {
         generation: &LoadedCatalog,
     ) -> Result<Vec<u8>> {
         match endpoint {
-            "search_cards" => search_cards(generation.cards.as_slice(), query),
+            "search_cards" => search_cards(
+                generation.cards.as_slice(),
+                query,
+                &generation.identity.content_id,
+                &self.external_identities,
+            ),
             "get_card" => get_card(generation.cards.as_slice(), query),
             _ => bail!("unsupported endpoint {endpoint:?}"),
         }
@@ -148,7 +165,12 @@ impl CatalogGateway for GameDataGateway {
 
     async fn search_catalog(&self, request: &SearchCardsRequest) -> Result<CatalogSearchResponse> {
         let generation = self.catalog_generation().await?;
-        let body = search_cards(generation.cards.as_slice(), &request.query_pairs())?;
+        let body = search_cards(
+            generation.cards.as_slice(),
+            &request.query_pairs(),
+            &generation.identity.content_id,
+            &self.external_identities,
+        )?;
         let page = serde_json::from_slice::<SearchCardsPage>(&body)
             .context("local catalog search produced an invalid page")?;
         Ok(CatalogSearchResponse {
@@ -179,13 +201,11 @@ impl CatalogGateway for GameDataGateway {
                     .cards
                     .iter()
                     .find(|card| card.row_id == template_id);
-                resolve_card(
+                resolve_card_with_context(
                     requested.template_id.clone(),
                     requested.tier,
                     card,
-                    request.include_raw_template,
                     requested.enchantment_id.as_ref(),
-                    request.include_all_enchantments,
                     resolution_key(
                         &generation.identity,
                         &requested.template_id,
@@ -193,6 +213,12 @@ impl CatalogGateway for GameDataGateway {
                         requested.enchantment_id.as_ref(),
                         request.include_all_enchantments,
                     ),
+                    &ResolveCardContext {
+                        include_raw_template: request.include_raw_template,
+                        include_all_enchantments: request.include_all_enchantments,
+                        catalog_content_id: &generation.identity.content_id,
+                        external_identities: &self.external_identities,
+                    },
                 )
             })
             .collect::<Vec<_>>();
@@ -392,7 +418,12 @@ fn validate_database_path(path: &Path) -> Result<PathBuf> {
         .with_context(|| format!("failed to resolve {}", path.display()))
 }
 
-fn search_cards(cards: &[NormalizedCard], query: &[(String, String)]) -> Result<Vec<u8>> {
+fn search_cards(
+    cards: &[NormalizedCard],
+    query: &[(String, String)],
+    catalog_content_id: &str,
+    external_identities: &ExternalIdentityCatalog,
+) -> Result<Vec<u8>> {
     let query = query_map(query);
     let page = parse_u32(&query, "page")?;
     let limit = parse_u32(&query, "limit")?;
@@ -433,7 +464,14 @@ fn search_cards(cards: &[NormalizedCard], query: &[(String, String)]) -> Result<
         .into_iter()
         .skip(start)
         .take(limit as usize)
-        .map(|card| project_card(&card.row_id, &card.payload))
+        .map(|card| {
+            project_card_with_context(
+                &card.row_id,
+                &card.payload,
+                catalog_content_id,
+                external_identities,
+            )
+        })
         .collect::<Vec<_>>();
     serde_json::to_vec(&json!({
         "page": page,
@@ -469,7 +507,12 @@ fn get_card(cards: &[NormalizedCard], query: &[(String, String)]) -> Result<Vec<
     serde_json::to_vec(&json!({"data": card.payload})).context("failed to serialize local card")
 }
 
-fn project_card(row_id: &str, card: &Value) -> CatalogCardProjection {
+fn project_card_with_context(
+    row_id: &str,
+    card: &Value,
+    catalog_content_id: &str,
+    external_identities: &ExternalIdentityCatalog,
+) -> CatalogCardProjection {
     let mut missing = Vec::new();
     let mut malformed = Vec::new();
     if row_id.parse::<CanonicalUuid>().is_err() {
@@ -523,16 +566,29 @@ fn project_card(row_id: &str, card: &Value) -> CatalogCardProjection {
     let tooltips = resolve_tooltips(card);
     missing.extend(tooltips.missing.iter().cloned());
     malformed.extend(tooltips.malformed.iter().cloned());
+    let name = display_name(card)
+        .or_else(|| internal_name(card))
+        .map(str::to_owned);
+    let external_references =
+        match external_identities.reference_for(row_id, name.as_deref(), card_type.as_deref()) {
+            Ok(references) => references,
+            Err(detail) => {
+                tracing::debug!(
+                    template_id = row_id,
+                    reason = detail,
+                    "external identity reference omitted"
+                );
+                Vec::new()
+            }
+        };
     CatalogCardProjection {
         template_id: row_id.to_owned(),
-        template_content_id: template_content_id(row_id, card),
+        template_content_id: template_content_id(row_id, card, catalog_content_id),
         payload_id_consistency,
         complete: missing.is_empty() && malformed.is_empty(),
         missing,
         malformed,
-        name: display_name(card)
-            .or_else(|| internal_name(card))
-            .map(str::to_owned),
+        name,
         card_type,
         version,
         starting_tier,
@@ -540,15 +596,29 @@ fn project_card(row_id: &str, card: &Value) -> CatalogCardProjection {
         tags,
         hidden_tags,
         tooltips,
+        external_references,
     }
 }
 
-fn template_content_id(row_id: &str, card: &Value) -> String {
+#[cfg(test)]
+fn project_card(row_id: &str, card: &Value) -> CatalogCardProjection {
+    let external_identities = ExternalIdentityCatalog::bundled().unwrap();
+    project_card_with_context(
+        row_id,
+        card,
+        "sha256:test-catalog-content",
+        &external_identities,
+    )
+}
+
+fn template_content_id(row_id: &str, card: &Value, catalog_content_id: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(b"bazaardb-cli/template-definition\0");
     digest.update(CATALOG_SCHEMA_VERSION.as_bytes());
     digest.update(b"\0");
     digest.update(RESOLVER_VERSION.as_bytes());
+    digest.update(b"\0");
+    digest.update(catalog_content_id.as_bytes());
     digest.update(b"\0");
     digest.update(row_id.as_bytes());
     digest.update(b"\0");
@@ -650,14 +720,20 @@ fn resolve_tooltips(card: &Value) -> TooltipResolution {
     }
 }
 
-fn resolve_card(
+struct ResolveCardContext<'a> {
+    include_raw_template: bool,
+    include_all_enchantments: bool,
+    catalog_content_id: &'a str,
+    external_identities: &'a ExternalIdentityCatalog,
+}
+
+fn resolve_card_with_context(
     template_id: CanonicalUuid,
     tier: CardTier,
     card: Option<&NormalizedCard>,
-    include_raw_template: bool,
     enchantment_id: Option<&CanonicalGameIdentifier>,
-    include_all_enchantments: bool,
     resolution_key: String,
+    context: &ResolveCardContext<'_>,
 ) -> ResolvedCard {
     let Some(card) = card else {
         return ResolvedCard {
@@ -683,14 +759,19 @@ fn resolve_card(
     };
     let row_id = card.row_id.as_str();
     let card = &card.payload;
-    let projection = project_card(row_id, card);
+    let projection = project_card_with_context(
+        row_id,
+        card,
+        context.catalog_content_id,
+        context.external_identities,
+    );
 
     let starting_tier = string_field(card, "StartingTier").and_then(|value| value.parse().ok());
     let (attributes, ability_ids, aura_ids, mut missing, mut malformed) =
         resolve_tier_layers(card, starting_tier, tier);
     let abilities = resolve_components(card, "Abilities", ability_ids);
     let auras = resolve_components(card, "Auras", aura_ids);
-    let enchantments = resolve_enchantments(card, enchantment_id, include_all_enchantments);
+    let enchantments = resolve_enchantments(card, enchantment_id, context.include_all_enchantments);
     missing.extend(abilities.missing.iter().map(|id| format!("abilities:{id}")));
     missing.extend(auras.missing.iter().map(|id| format!("auras:{id}")));
     missing.extend(
@@ -742,7 +823,7 @@ fn resolve_card(
             .map(str::to_owned)
             .collect(),
         template: Some(projection),
-        raw_template: include_raw_template.then(|| card.clone()),
+        raw_template: context.include_raw_template.then(|| card.clone()),
         attributes,
         abilities,
         auras,
@@ -750,6 +831,32 @@ fn resolve_card(
         missing,
         malformed,
     }
+}
+
+#[cfg(test)]
+fn resolve_card(
+    template_id: CanonicalUuid,
+    tier: CardTier,
+    card: Option<&NormalizedCard>,
+    include_raw_template: bool,
+    enchantment_id: Option<&CanonicalGameIdentifier>,
+    include_all_enchantments: bool,
+    resolution_key: String,
+) -> ResolvedCard {
+    let external_identities = ExternalIdentityCatalog::bundled().unwrap();
+    resolve_card_with_context(
+        template_id,
+        tier,
+        card,
+        enchantment_id,
+        resolution_key,
+        &ResolveCardContext {
+            include_raw_template,
+            include_all_enchantments,
+            catalog_content_id: "sha256:test-catalog-content",
+            external_identities: &external_identities,
+        },
+    )
 }
 
 fn resolve_tier_layers(
@@ -935,9 +1042,10 @@ fn resolve_components(card: &Value, key: &str, ids: Vec<String>) -> ComponentRes
     for id in &ids {
         match definitions.and_then(|definitions| definitions.get(id)) {
             Some(value) if value.is_null() => malformed.push(format!("{id}:null")),
-            Some(value) => {
+            Some(value) if value.is_object() => {
                 values.insert(id.clone(), value.clone());
             }
+            Some(_) => malformed.push(format!("{id}:expected_object")),
             None => missing.push(id.clone()),
         }
     }
@@ -968,14 +1076,22 @@ fn resolve_enchantments(
         Some(_) => (ComponentShape::Malformed, None),
     };
     if enchantment_id.is_none() && !include_all {
+        let malformed = (shape == ComponentShape::Malformed)
+            .then(|| "definition:expected_object".to_owned())
+            .into_iter()
+            .collect::<Vec<_>>();
         return ComponentResolution {
-            status: ComponentStatus::NotRequested,
+            status: if malformed.is_empty() {
+                ComponentStatus::NotRequested
+            } else {
+                ComponentStatus::Incomplete
+            },
             shape,
             ids: Vec::new(),
             values: BTreeMap::new(),
             missing: Vec::new(),
-            malformed: Vec::new(),
-            complete: true,
+            complete: malformed.is_empty(),
+            malformed,
         };
     }
     if shape == ComponentShape::Malformed {
@@ -1006,9 +1122,10 @@ fn resolve_enchantments(
     for id in &ids {
         match definitions.and_then(|definitions| definitions.get(id)) {
             Some(value) if value.is_null() => malformed.push(format!("{id}:null")),
-            Some(value) => {
+            Some(value) if value.is_object() => {
                 values.insert(id.clone(), value.clone());
             }
+            Some(_) => malformed.push(format!("{id}:expected_object")),
             None => missing.push(id.clone()),
         }
     }
@@ -1034,16 +1151,10 @@ fn resolution_key(
     enchantment_id: Option<&CanonicalGameIdentifier>,
     include_all_enchantments: bool,
 ) -> String {
-    let enchantment = if include_all_enchantments {
-        "all".to_owned()
-    } else {
-        enchantment_id
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "not_requested".to_owned())
-    };
     format!(
-        "resolve/{}/{template_id}/{tier}/enchantment/{enchantment}",
-        identity.content_id
+        "resolve/{}/{template_id}/{tier}/{}",
+        identity.content_id,
+        selector_key(enchantment_id, include_all_enchantments)
     )
 }
 
@@ -1367,7 +1478,17 @@ mod tests {
             ("category".to_owned(), "items".to_owned()),
             ("show_unobtainable".to_owned(), "false".to_owned()),
         ];
-        let value: Value = serde_json::from_slice(&search_cards(&cards, &query).unwrap()).unwrap();
+        let external_identities = ExternalIdentityCatalog::bundled().unwrap();
+        let value: Value = serde_json::from_slice(
+            &search_cards(
+                &cards,
+                &query,
+                "sha256:test-catalog-content",
+                &external_identities,
+            )
+            .unwrap(),
+        )
+        .unwrap();
         assert_eq!(value["total"], 2);
         assert_eq!(value["cards"][0]["name"], "Beta");
     }
@@ -1606,6 +1727,45 @@ mod tests {
         );
         assert!(!malformed.complete);
         assert_eq!(malformed.enchantments.malformed, ["Broken:null"]);
+    }
+
+    #[test]
+    fn resolver_rejects_non_object_component_definitions() {
+        let template_id = "0022c409-c839-41e8-8022-65a407457dfe";
+        let card = normalized(json!({
+            "Id": template_id,
+            "Type": "Item",
+            "StartingTier": "Bronze",
+            "Size": "Small",
+            "Tags": [],
+            "Tiers": {
+                "Bronze": {
+                    "Attributes": {},
+                    "AbilityIds": ["scalar"],
+                    "AuraIds": ["array"]
+                }
+            },
+            "Abilities": {"scalar": 7},
+            "Auras": {"array": []},
+            "Enchantments": {"Fiery": "wrong"}
+        }));
+        let fiery = "Fiery".parse::<CanonicalGameIdentifier>().unwrap();
+        let resolved = resolve_card(
+            template_id.parse().unwrap(),
+            CardTier::Bronze,
+            Some(&card),
+            false,
+            Some(&fiery),
+            false,
+            "test".to_owned(),
+        );
+        assert!(!resolved.complete);
+        assert_eq!(resolved.abilities.malformed, ["scalar:expected_object"]);
+        assert_eq!(resolved.auras.malformed, ["array:expected_object"]);
+        assert_eq!(resolved.enchantments.malformed, ["Fiery:expected_object"]);
+        assert!(resolved.abilities.values.is_empty());
+        assert!(resolved.auras.values.is_empty());
+        assert!(resolved.enchantments.values.is_empty());
     }
 
     #[test]

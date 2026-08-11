@@ -5,6 +5,10 @@ mod parse_gateway;
 mod updater;
 
 pub use cache::{CacheEntry, CacheStatus, CacheStore};
+pub use catalog_snapshot::{
+    CatalogCacheClearResult, CatalogCachePruneResult, CatalogCacheStatus, catalog_cache_status,
+    clear_catalog_cache, prune_catalog_cache,
+};
 pub use game_data_gateway::{GameDataGateway, GameDataGatewayConfig, detect_game_data_path};
 pub use parse_gateway::{DEFAULT_API_BASE, ParseGateway, ParseGatewayConfig};
 pub use updater::{GithubUpdater, InstallStatus, UpdateCheck};

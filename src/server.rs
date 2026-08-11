@@ -213,6 +213,7 @@ fn catalog_request_or_internal_error(error: anyhow::Error, log_message: &'static
     let is_request_error = message.starts_with("category must be")
         || message.starts_with("limit must be")
         || message.starts_with("order must be")
+        || message.starts_with("sortBy must be")
         || message.starts_with("resolve requests must contain");
     if is_request_error {
         catalog_error(

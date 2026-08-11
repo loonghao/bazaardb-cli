@@ -14,6 +14,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const EAGLE_ID: &str = "0022c409-c839-41e8-8022-65a407457dfe";
 const MERCHANT_ID: &str = "1022c409-c839-41e8-8022-65a407457dfe";
+const UNIBOU_ID: &str = "7317d6a2-adea-442c-9e97-7f7bbf64ae99";
 
 fn command() -> Command {
     Command::new(env!("CARGO_BIN_EXE_bazaardb-cli"))
@@ -316,15 +317,27 @@ fn create_game_data(path: &Path) {
                     "Attributes": {"Damage": 20},
                     "AbilityIds": ["silver-ability"],
                     "AuraIds": ["silver-aura"]
+                },
+                "Gold": {
+                    "Attributes": {},
+                    "AbilityIds": ["scalar-ability"],
+                    "AuraIds": ["scalar-aura"]
                 }
             },
             "Abilities": {
                 "bronze-ability": {"kind": "bronze"},
-                "silver-ability": {"kind": "silver"}
+                "silver-ability": {"kind": "silver"},
+                "scalar-ability": 7
             },
-            "Auras": {"silver-aura": {"kind": "silver"}},
+            "Auras": {
+                "silver-aura": {"kind": "silver"},
+                "scalar-aura": []
+            },
             "Enchantments": {
                 "Fiery": {"Damage": 10},
+                "all": {"Damage": 11},
+                "not_requested": {"Damage": 12},
+                "Scalar": 13,
                 "Broken": null
             },
             "future_field": {"preserved": true}
@@ -452,9 +465,9 @@ fn replace_snapshot_header(path: &Path, field: &str, replacement: &str) {
     let length = u32::from_le_bytes(bytes[16..20].try_into().unwrap()) as usize;
     let header = std::str::from_utf8(&bytes[20..20 + length]).unwrap();
     let current = if field == "resolverVersion" {
-        "1.1.0"
+        "1.2.0"
     } else {
-        "1.0.0"
+        "1.1.0"
     };
     let old = format!("\"{field}\":\"{current}\"");
     let new = format!("\"{field}\":\"{replacement}\"");
@@ -893,7 +906,7 @@ fn resolve_is_compact_stable_and_enchantment_aware() {
         value["results"][0]["resolutionKey"]
             .as_str()
             .unwrap()
-            .contains("enchantment/Fiery")
+            .contains("selector/exact/Fiery")
     );
 
     command()
@@ -910,6 +923,132 @@ fn resolve_is_compact_stable_and_enchantment_aware() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown enchantment"));
+
+    let jsonl = command()
+        .args([
+            "--provider",
+            "game-data",
+            "--game-data",
+            database.to_str().unwrap(),
+            "--cache-dir",
+            cache.to_str().unwrap(),
+            "--output",
+            "jsonl",
+            "resolve",
+            &format!("{EAGLE_ID}@Silver#Fiery"),
+        ])
+        .output()
+        .unwrap();
+    assert!(jsonl.status.success());
+    let record: serde_json::Value = serde_json::from_slice(&jsonl.stdout).unwrap();
+    assert_eq!(record["authority"], "inspection_only");
+    assert_eq!(record["authorizesAction"], false);
+}
+
+#[tokio::test]
+async fn external_identity_fence_is_independent_and_compact_references_are_owned_here() {
+    let directory = TempDir::new().unwrap();
+    let first_database = directory.path().join("first.db");
+    let second_database = directory.path().join("second.db");
+    let cache = directory.path().join("cache");
+    let card = json!({
+        "Id": UNIBOU_ID,
+        "InternalName": "Unibou",
+        "Type": "Item",
+        "Version": "1.0.0",
+        "StartingTier": "Bronze",
+        "Size": "Medium",
+        "Tags": ["Friend"],
+        "Localization": {"Title": {"Text": "Unibou"}},
+        "Tiers": {"Bronze": {"Attributes": {"Shield": 10}}}
+    });
+    create_single_card_game_data(&first_database, UNIBOU_ID, &card);
+    let mut changed = card.clone();
+    changed["Tiers"]["Bronze"]["Attributes"]["Shield"] = json!(11);
+    create_single_card_game_data(&second_database, UNIBOU_ID, &changed);
+
+    let resolve = |database: &Path| {
+        let output = command()
+            .args([
+                "--provider",
+                "game-data",
+                "--game-data",
+                database.to_str().unwrap(),
+                "--cache-dir",
+                cache.to_str().unwrap(),
+                "resolve",
+                &format!("{UNIBOU_ID}@Bronze"),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+    let first = resolve(&first_database);
+    let second = resolve(&second_database);
+    assert_eq!(first["externalIdentitySchemaVersion"], "1.0.0");
+    assert_eq!(
+        first["externalIdentityContentId"],
+        second["externalIdentityContentId"]
+    );
+    assert_ne!(first["contentId"], second["contentId"]);
+    assert_ne!(
+        first["results"][0]["templateContentId"],
+        first["externalIdentityContentId"]
+    );
+    let reference = &first["results"][0]["template"]["externalReferences"][0];
+    assert_eq!(reference["provider"], "bazaardb");
+    assert_eq!(reference["externalCardId"], "l1n7dqkk5gpl0n6h52880y0jq5");
+    assert_eq!(reference["canonicalName"], "Unibou");
+
+    let port = available_loopback_port();
+    let child = ProcessCommand::new(env!("CARGO_BIN_EXE_bazaardb-cli"))
+        .args([
+            "--provider",
+            "game-data",
+            "--game-data",
+            first_database.to_str().unwrap(),
+            "--cache-dir",
+            cache.to_str().unwrap(),
+            "serve",
+            "--port",
+            &port.to_string(),
+            "--refresh-seconds",
+            "300",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _guard = ChildGuard(child);
+    let client = reqwest::Client::new();
+    let endpoint = format!("http://127.0.0.1:{port}/v1/catalog/search?query=Unibou");
+    let response = {
+        let mut response = None;
+        for _ in 0..50 {
+            if let Ok(candidate) = client.get(&endpoint).send().await
+                && candidate.status().is_success()
+            {
+                response = Some(candidate);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        response.expect("catalog API did not start")
+    };
+    let search: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        search["externalIdentityContentId"],
+        first["externalIdentityContentId"]
+    );
+    assert_eq!(
+        search["cards"][0]["externalReferences"][0]["externalCardId"],
+        "l1n7dqkk5gpl0n6h52880y0jq5"
+    );
 }
 
 #[test]
@@ -998,8 +1137,15 @@ async fn catalog_api_is_read_only_compact_and_fail_closed() {
     let status: serde_json::Value = status.json().await.unwrap();
     assert_eq!(status["authority"], "inspection_only");
     assert_eq!(status["authorizesAction"], false);
-    assert_eq!(status["catalogSchemaVersion"], "1.0.0");
-    assert_eq!(status["resolverVersion"], "1.1.0");
+    assert_eq!(status["catalogSchemaVersion"], "1.1.0");
+    assert_eq!(status["resolverVersion"], "1.2.0");
+    assert_eq!(status["externalIdentitySchemaVersion"], "1.0.0");
+    assert!(
+        status["externalIdentityContentId"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
     assert!(
         !serde_json::to_string(&status)
             .unwrap()
@@ -1058,6 +1204,146 @@ async fn catalog_api_is_read_only_compact_and_fail_closed() {
         searched_template_content_id
     );
 
+    let distinct_tuples = client
+        .post(format!("{base}/resolve"))
+        .json(&json!({
+            "requests": [
+                {"templateId": EAGLE_ID, "tier": "Bronze"},
+                {"templateId": EAGLE_ID, "tier": "Silver"}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(distinct_tuples.status().is_success());
+
+    let sentinel_ids = client
+        .post(format!("{base}/resolve"))
+        .json(&json!({
+            "requests": [
+                {"templateId": EAGLE_ID, "tier": "Bronze"},
+                {"templateId": EAGLE_ID, "tier": "Bronze", "enchantmentId": "all"},
+                {"templateId": EAGLE_ID, "tier": "Bronze", "enchantmentId": "not_requested"}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(sentinel_ids.status().is_success());
+    let sentinel_ids: serde_json::Value = sentinel_ids.json().await.unwrap();
+    let keys = sentinel_ids["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|result| result["resolutionKey"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(keys.len(), 3);
+    assert!(keys[0].ends_with("selector/not_requested"));
+    assert!(keys[1].ends_with("selector/exact/all"));
+    assert!(keys[2].ends_with("selector/exact/not_requested"));
+
+    let include_all_valid = client
+        .post(format!("{base}/resolve"))
+        .json(&json!({
+            "includeAllEnchantments": true,
+            "requests": [{"templateId": MERCHANT_ID, "tier": "Bronze"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(include_all_valid.status().is_success());
+    let include_all_valid: serde_json::Value = include_all_valid.json().await.unwrap();
+    assert!(
+        include_all_valid["results"][0]["resolutionKey"]
+            .as_str()
+            .unwrap()
+            .ends_with("selector/all")
+    );
+
+    let include_all = client
+        .post(format!("{base}/resolve"))
+        .json(&json!({
+            "includeAllEnchantments": true,
+            "requests": [{"templateId": EAGLE_ID, "tier": "Bronze"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        include_all.status(),
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let include_all: serde_json::Value = include_all.json().await.unwrap();
+    assert!(
+        include_all["error"]["details"]["failures"][0]["malformed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|detail| detail.as_str().unwrap().contains("Scalar:expected_object"))
+    );
+
+    let malformed_components = client
+        .post(format!("{base}/resolve"))
+        .json(&json!({
+            "requests": [{"templateId": EAGLE_ID, "tier": "Gold"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        malformed_components.status(),
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let malformed_components: serde_json::Value = malformed_components.json().await.unwrap();
+    let malformed = malformed_components["error"]["details"]["failures"][0]["malformed"]
+        .as_array()
+        .unwrap();
+    assert!(malformed.iter().any(|detail| {
+        detail
+            .as_str()
+            .unwrap()
+            .contains("abilities:scalar-ability:expected_object")
+    }));
+    assert!(malformed.iter().any(|detail| {
+        detail
+            .as_str()
+            .unwrap()
+            .contains("auras:scalar-aura:expected_object")
+    }));
+
+    let malformed_selected_enchantment = client
+        .post(format!("{base}/resolve"))
+        .json(&json!({
+            "requests": [{
+                "templateId": EAGLE_ID,
+                "tier": "Silver",
+                "enchantmentId": "Scalar"
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        malformed_selected_enchantment.status(),
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    for query in ["sortBy=bogus", "limti=1"] {
+        let invalid = client
+            .get(format!("{base}/search?{query}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            invalid.headers()[reqwest::header::CACHE_CONTROL],
+            "no-store, max-age=0"
+        );
+        let invalid: serde_json::Value = invalid.json().await.unwrap();
+        assert_eq!(invalid["error"]["code"], "invalid_request");
+        assert_eq!(invalid["authorizesAction"], false);
+    }
+
     let unknown = client
         .post(format!("{base}/resolve"))
         .json(&json!({
@@ -1103,7 +1389,7 @@ async fn catalog_api_is_read_only_compact_and_fail_closed() {
         .json(&json!({
             "requests": [
                 {"templateId": EAGLE_ID, "tier": "Bronze"},
-                {"templateId": EAGLE_ID, "tier": "Silver"}
+                {"templateId": EAGLE_ID, "tier": "Bronze"}
             ]
         }))
         .send()
@@ -1114,7 +1400,7 @@ async fn catalog_api_is_read_only_compact_and_fail_closed() {
         reqwest::StatusCode::UNPROCESSABLE_ENTITY
     );
     let duplicate: serde_json::Value = duplicate.json().await.unwrap();
-    assert_eq!(duplicate["error"]["code"], "duplicate_template_id");
+    assert_eq!(duplicate["error"]["code"], "duplicate_resolution");
 }
 
 #[test]
@@ -1157,6 +1443,145 @@ fn normalized_catalog_snapshot_hits_across_processes_and_changes_identity() {
     let changed_json: serde_json::Value = serde_json::from_slice(&changed.stdout).unwrap();
     assert_ne!(cold_json["contentId"], changed_json["contentId"]);
     assert_ne!(cold_json["databaseSha256"], changed_json["databaseSha256"]);
+}
+
+#[test]
+fn template_digest_is_fenced_by_cross_template_static_definitions() {
+    let directory = TempDir::new().unwrap();
+    let database = directory.path().join("GameData.db");
+    let cache = directory.path().join("cache");
+    create_game_data(&database);
+    let connection = Connection::open(&database).unwrap();
+    let eagle_body = connection
+        .query_row("SELECT Data FROM cards WHERE Id = ?1", [EAGLE_ID], |row| {
+            row.get::<_, Vec<u8>>(0)
+        })
+        .unwrap();
+    let mut eagle: serde_json::Value = serde_json::from_slice(&eagle_body).unwrap();
+    eagle["RelatedTemplateId"] = json!(MERCHANT_ID);
+    connection
+        .execute(
+            "UPDATE cards SET Data = ?1 WHERE Id = ?2",
+            params![serde_json::to_vec(&eagle).unwrap(), EAGLE_ID],
+        )
+        .unwrap();
+    let first = resolve_process(&database, &cache);
+    assert!(first.status.success());
+    let first: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    let first_digest = first["results"][0]["templateContentId"].clone();
+
+    let dependency_body = connection
+        .query_row(
+            "SELECT Data FROM cards WHERE Id = ?1",
+            [MERCHANT_ID],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .unwrap();
+    let mut dependency: serde_json::Value = serde_json::from_slice(&dependency_body).unwrap();
+    dependency["StaticDefinitionRevision"] = json!(2);
+    connection
+        .execute(
+            "UPDATE cards SET Data = ?1 WHERE Id = ?2",
+            params![serde_json::to_vec(&dependency).unwrap(), MERCHANT_ID],
+        )
+        .unwrap();
+    let second = resolve_process(&database, &cache);
+    assert!(second.status.success());
+    let second: serde_json::Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_ne!(first["contentId"], second["contentId"]);
+    assert_ne!(first_digest, second["results"][0]["templateContentId"]);
+}
+
+#[test]
+fn catalog_cache_lifecycle_is_bounded_observable_and_clearable() {
+    let directory = TempDir::new().unwrap();
+    let cache = directory.path().join("cache");
+    for generation in 0..5 {
+        let database = directory.path().join(format!("generation-{generation}.db"));
+        let card = json!({
+            "Id": EAGLE_ID,
+            "InternalName": "Lifecycle Fixture",
+            "Type": "Item",
+            "Version": "1.0.0",
+            "StartingTier": "Bronze",
+            "Size": "Small",
+            "Tags": [],
+            "Tiers": {"Bronze": {"Attributes": {"Generation": generation}}}
+        });
+        create_single_card_game_data(&database, EAGLE_ID, &card);
+        let output = command()
+            .args([
+                "--provider",
+                "game-data",
+                "--game-data",
+                database.to_str().unwrap(),
+                "--cache-dir",
+                cache.to_str().unwrap(),
+                "resolve",
+                &format!("{EAGLE_ID}@Bronze"),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let status = command()
+        .args(["--cache-dir", cache.to_str().unwrap(), "cache", "status"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert!(
+        status["data"]["catalog"]["generationCount"]
+            .as_u64()
+            .unwrap()
+            <= 3
+    );
+    assert!(status["data"]["catalog"]["snapshotBytes"].as_u64().unwrap() > 0);
+    assert_eq!(status["data"]["catalog"]["maxGenerations"], 3);
+    assert_eq!(
+        status["data"]["catalog"]["maxBytes"],
+        1024_u64 * 1024 * 1024
+    );
+    assert_eq!(
+        status["data"]["catalog"]["retentionSeconds"],
+        30_u64 * 24 * 60 * 60
+    );
+
+    let prune = command()
+        .args(["--cache-dir", cache.to_str().unwrap(), "cache", "prune"])
+        .output()
+        .unwrap();
+    assert!(prune.status.success());
+    let prune: serde_json::Value = serde_json::from_slice(&prune.stdout).unwrap();
+    assert!(
+        prune["data"]["catalog"]["remainingGenerations"]
+            .as_u64()
+            .unwrap()
+            <= 3
+    );
+
+    command()
+        .args([
+            "--cache-dir",
+            cache.to_str().unwrap(),
+            "cache",
+            "clear",
+            "--yes",
+        ])
+        .assert()
+        .success();
+    let status = command()
+        .args(["--cache-dir", cache.to_str().unwrap(), "cache", "status"])
+        .output()
+        .unwrap();
+    let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["data"]["catalog"]["generationCount"], 0);
+    assert_eq!(status["data"]["catalog"]["snapshotBytes"], 0);
 }
 
 #[test]

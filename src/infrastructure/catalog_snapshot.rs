@@ -19,6 +19,9 @@ const MEMO_FORMAT_VERSION: u32 = 1;
 const MAX_CARD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_TOTAL_CARD_BYTES: usize = 512 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES: u64 = 768 * 1024 * 1024;
+pub const CATALOG_CACHE_MAX_GENERATIONS: u64 = 3;
+pub const CATALOG_CACHE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+pub const CATALOG_CACHE_RETENTION_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +80,10 @@ struct IoTrace {
     sqlite_rows_read: u64,
     snapshot_bytes_read: u64,
     snapshot_bytes_written: u64,
+    generation_count: u64,
+    snapshot_cache_bytes: u64,
+    pruned_generations: u64,
+    pruned_bytes: u64,
 }
 
 impl IoTrace {
@@ -86,8 +93,38 @@ impl IoTrace {
             sqlite_rows_read: 0,
             snapshot_bytes_read: 0,
             snapshot_bytes_written: 0,
+            generation_count: 0,
+            snapshot_cache_bytes: 0,
+            pruned_generations: 0,
+            pruned_bytes: 0,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogCacheStatus {
+    pub generation_count: u64,
+    pub snapshot_bytes: u64,
+    pub max_generations: u64,
+    pub max_bytes: u64,
+    pub retention_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogCachePruneResult {
+    pub removed_generations: u64,
+    pub removed_bytes: u64,
+    pub remaining_generations: u64,
+    pub remaining_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogCacheClearResult {
+    pub removed_files: u64,
+    pub removed_bytes: u64,
 }
 
 pub(super) fn database_stamp(path: &Path) -> Result<DatabaseStamp> {
@@ -135,6 +172,7 @@ pub(super) fn load_or_rebuild(
     database_path: &Path,
     cache_dir: &Path,
     expected_stamp: DatabaseStamp,
+    external_identity_content_id: &str,
 ) -> Result<LoadedCatalog> {
     let started = Instant::now();
     fs::create_dir_all(cache_dir).with_context(|| {
@@ -156,11 +194,18 @@ pub(super) fn load_or_rebuild(
         }
     };
     let snapshot_path = snapshot_path(cache_dir, &database_sha256);
-    match read_snapshot(&snapshot_path, &database_sha256, expected_stamp, &mut trace) {
+    match read_snapshot(
+        &snapshot_path,
+        &database_sha256,
+        expected_stamp,
+        external_identity_content_id,
+        &mut trace,
+    ) {
         Ok(loaded) => {
             if !memo_hit {
                 write_memo(&memo_path, &path_hash, expected_stamp, &database_sha256)?;
             }
+            observe_cache_status(cache_dir, &mut trace);
             emit_trace("hit", "validated_snapshot", started, &trace);
             Ok(loaded)
         }
@@ -171,8 +216,11 @@ pub(super) fn load_or_rebuild(
                 .context("failed to serialize normalized catalog payload")?;
             let payload_sha256 = sha256_bytes(&payload);
             let catalog_sha256 = catalog_content_sha256(&payload);
-            let identity =
-                CatalogIdentity::from_hashes(database_sha256.clone(), catalog_sha256.clone());
+            let identity = CatalogIdentity::from_hashes(
+                database_sha256.clone(),
+                catalog_sha256.clone(),
+                external_identity_content_id.to_owned(),
+            );
             let header = SnapshotHeader {
                 format_version: SNAPSHOT_FORMAT_VERSION,
                 catalog_schema_version: CATALOG_SCHEMA_VERSION.to_owned(),
@@ -189,6 +237,16 @@ pub(super) fn load_or_rebuild(
             if final_stamp != expected_stamp {
                 bail!("GameData.db changed while rebuilding the catalog snapshot; retry");
             }
+            match prune_catalog_cache_internal(cache_dir, Some(&snapshot_path)) {
+                Ok(pruned) => {
+                    trace.pruned_generations = pruned.removed_generations;
+                    trace.pruned_bytes = pruned.removed_bytes;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "catalog snapshot lifecycle prune failed");
+                }
+            }
+            observe_cache_status(cache_dir, &mut trace);
             emit_trace("miss_rebuilt", &reason.to_string(), started, &trace);
             Ok(LoadedCatalog {
                 stamp: final_stamp,
@@ -242,6 +300,7 @@ fn read_snapshot(
     path: &Path,
     database_sha256: &str,
     stamp: DatabaseStamp,
+    external_identity_content_id: &str,
     trace: &mut IoTrace,
 ) -> Result<LoadedCatalog> {
     let metadata = path.metadata().context("snapshot_missing")?;
@@ -297,6 +356,7 @@ fn read_snapshot(
                 .strip_prefix("sha256:")
                 .expect("validated content ID prefix")
                 .to_owned(),
+            external_identity_content_id.to_owned(),
         ),
         cards: Arc::new(cards),
     })
@@ -496,6 +556,152 @@ fn validate_sha256(value: &str) -> Result<()> {
     Ok(())
 }
 
+fn observe_cache_status(cache_dir: &Path, trace: &mut IoTrace) {
+    if let Ok(status) = catalog_cache_status(cache_dir) {
+        trace.generation_count = status.generation_count;
+        trace.snapshot_cache_bytes = status.snapshot_bytes;
+    }
+}
+
+#[derive(Debug)]
+struct SnapshotFile {
+    path: PathBuf,
+    bytes: u64,
+    modified: SystemTime,
+}
+
+pub fn catalog_cache_status(cache_dir: &Path) -> Result<CatalogCacheStatus> {
+    let snapshots = snapshot_files(cache_dir)?;
+    Ok(CatalogCacheStatus {
+        generation_count: snapshots.len() as u64,
+        snapshot_bytes: snapshots.iter().map(|snapshot| snapshot.bytes).sum(),
+        max_generations: CATALOG_CACHE_MAX_GENERATIONS,
+        max_bytes: CATALOG_CACHE_MAX_BYTES,
+        retention_seconds: CATALOG_CACHE_RETENTION_SECONDS,
+    })
+}
+
+pub fn prune_catalog_cache(cache_dir: &Path) -> Result<CatalogCachePruneResult> {
+    prune_catalog_cache_internal(cache_dir, None)
+}
+
+pub fn clear_catalog_cache(cache_dir: &Path) -> Result<CatalogCacheClearResult> {
+    if !cache_dir.exists() {
+        return Ok(CatalogCacheClearResult {
+            removed_files: 0,
+            removed_bytes: 0,
+        });
+    }
+    let mut removed_files = 0_u64;
+    let mut removed_bytes = 0_u64;
+    for entry in fs::read_dir(cache_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_file() || !is_catalog_cache_file(&path) {
+            continue;
+        }
+        let bytes = entry.metadata()?.len();
+        fs::remove_file(&path)
+            .with_context(|| format!("failed to remove catalog cache file {}", path.display()))?;
+        removed_files = removed_files.saturating_add(1);
+        removed_bytes = removed_bytes.saturating_add(bytes);
+    }
+    sync_directory(cache_dir);
+    Ok(CatalogCacheClearResult {
+        removed_files,
+        removed_bytes,
+    })
+}
+
+fn prune_catalog_cache_internal(
+    cache_dir: &Path,
+    protected: Option<&Path>,
+) -> Result<CatalogCachePruneResult> {
+    let mut snapshots = snapshot_files(cache_dir)?;
+    snapshots.sort_by_key(|snapshot| std::cmp::Reverse(snapshot.modified));
+    let cutoff = SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(
+            CATALOG_CACHE_RETENTION_SECONDS,
+        ))
+        .unwrap_or(UNIX_EPOCH);
+    let protected_bytes = protected.and_then(|path| {
+        snapshots
+            .iter()
+            .find(|snapshot| snapshot.path == path)
+            .map(|snapshot| snapshot.bytes)
+    });
+    let mut kept_generations = u64::from(protected_bytes.is_some());
+    let mut kept_bytes = protected_bytes.unwrap_or_default();
+    let mut removed_generations = 0_u64;
+    let mut removed_bytes = 0_u64;
+    for snapshot in snapshots {
+        let is_protected = protected.is_some_and(|path| path == snapshot.path);
+        if is_protected {
+            continue;
+        }
+        let expired = snapshot.modified < cutoff;
+        let exceeds_generations = kept_generations >= CATALOG_CACHE_MAX_GENERATIONS;
+        let exceeds_bytes = kept_bytes.saturating_add(snapshot.bytes) > CATALOG_CACHE_MAX_BYTES;
+        if expired || exceeds_generations || exceeds_bytes {
+            fs::remove_file(&snapshot.path).with_context(|| {
+                format!(
+                    "failed to prune catalog snapshot {}",
+                    snapshot.path.display()
+                )
+            })?;
+            removed_generations = removed_generations.saturating_add(1);
+            removed_bytes = removed_bytes.saturating_add(snapshot.bytes);
+        } else {
+            kept_generations = kept_generations.saturating_add(1);
+            kept_bytes = kept_bytes.saturating_add(snapshot.bytes);
+        }
+    }
+    if cache_dir.exists() {
+        sync_directory(cache_dir);
+    }
+    Ok(CatalogCachePruneResult {
+        removed_generations,
+        removed_bytes,
+        remaining_generations: kept_generations,
+        remaining_bytes: kept_bytes,
+    })
+}
+
+fn snapshot_files(cache_dir: &Path) -> Result<Vec<SnapshotFile>> {
+    if !cache_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut snapshots = Vec::new();
+    for entry in fs::read_dir(cache_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_file() || !is_snapshot_file(&path) {
+            continue;
+        }
+        let metadata = entry.metadata()?;
+        snapshots.push(SnapshotFile {
+            path,
+            bytes: metadata.len(),
+            modified: metadata.modified().unwrap_or(UNIX_EPOCH),
+        });
+    }
+    Ok(snapshots)
+}
+
+fn is_snapshot_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("catalog-") && name.ends_with(".snapshot"))
+}
+
+fn is_catalog_cache_file(path: &Path) -> bool {
+    is_snapshot_file(path)
+        || path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("stamp-") && name.ends_with(".json"))
+}
+
 fn emit_trace(outcome: &str, reason: &str, started: Instant, trace: &IoTrace) {
     tracing::info!(
         target: "bazaardb_cli::catalog_cache",
@@ -506,6 +712,10 @@ fn emit_trace(outcome: &str, reason: &str, started: Instant, trace: &IoTrace) {
         sqlite_rows_read = trace.sqlite_rows_read,
         snapshot_bytes_read = trace.snapshot_bytes_read,
         snapshot_bytes_written = trace.snapshot_bytes_written,
+        generation_count = trace.generation_count,
+        snapshot_cache_bytes = trace.snapshot_cache_bytes,
+        pruned_generations = trace.pruned_generations,
+        pruned_bytes = trace.pruned_bytes,
         "catalog cache load"
     );
 }
