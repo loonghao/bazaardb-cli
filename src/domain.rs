@@ -44,7 +44,7 @@ pub struct ApiResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SearchCardsRequest {
     #[serde(alias = "q")]
     pub query: Option<String>,
@@ -91,6 +91,12 @@ impl SearchCardsRequest {
         }
         if !matches!(self.order.as_str(), "ascending" | "descending") {
             bail!("order must be ascending or descending");
+        }
+        if !matches!(
+            self.sort_by.to_ascii_lowercase().as_str(),
+            "auto" | "name" | "tier" | "base_tier" | "basetier" | "startingtier" | "size" | "type"
+        ) {
+            bail!("sortBy must be one of: Auto, Name, Tier, BaseTier, StartingTier, Size, Type");
         }
         Ok(())
     }

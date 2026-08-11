@@ -8,8 +8,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub const CATALOG_SCHEMA_VERSION: &str = "1.0.0";
-pub const RESOLVER_VERSION: &str = "1.1.0";
+pub const CATALOG_SCHEMA_VERSION: &str = "1.1.0";
+pub const RESOLVER_VERSION: &str = "1.2.0";
 pub const MAX_RESOLVE_BATCH: usize = 64;
 pub const MAX_CATALOG_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 pub const INSPECTION_AUTHORITY: &str = "inspection_only";
@@ -177,6 +177,8 @@ impl FromStr for CardTier {
 pub struct CatalogIdentity {
     pub catalog_schema_version: &'static str,
     pub resolver_version: &'static str,
+    pub external_identity_schema_version: &'static str,
+    pub external_identity_content_id: String,
     pub database_sha256: String,
     pub content_id: String,
     pub cache_key: String,
@@ -184,14 +186,21 @@ pub struct CatalogIdentity {
 
 impl CatalogIdentity {
     #[must_use]
-    pub fn from_hashes(database_sha256: String, catalog_sha256: String) -> Self {
+    pub fn from_hashes(
+        database_sha256: String,
+        catalog_sha256: String,
+        external_identity_content_id: String,
+    ) -> Self {
         Self {
             content_id: format!("sha256:{catalog_sha256}"),
             cache_key: format!(
-                "catalog/{CATALOG_SCHEMA_VERSION}/resolver/{RESOLVER_VERSION}/database/{database_sha256}/content/{catalog_sha256}"
+                "catalog/{CATALOG_SCHEMA_VERSION}/resolver/{RESOLVER_VERSION}/database/{database_sha256}/content/{catalog_sha256}/external/{external_identity_content_id}"
             ),
             catalog_schema_version: CATALOG_SCHEMA_VERSION,
             resolver_version: RESOLVER_VERSION,
+            external_identity_schema_version:
+                crate::external_identity::EXTERNAL_IDENTITY_SCHEMA_VERSION,
+            external_identity_content_id,
             database_sha256,
         }
     }
@@ -233,20 +242,30 @@ impl ResolveBatchRequest {
             )
             .into());
         }
-        let mut ids = BTreeSet::new();
+        let mut resolutions = BTreeSet::new();
         let duplicates = self
             .requests
             .iter()
-            .map(|request| request.template_id.to_string())
-            .filter(|template_id| !ids.insert(template_id.clone()))
+            .map(|request| {
+                format!(
+                    "{}/{}/{}",
+                    request.template_id,
+                    request.tier,
+                    selector_key(
+                        request.enchantment_id.as_ref(),
+                        self.include_all_enchantments
+                    )
+                )
+            })
+            .filter(|resolution| !resolutions.insert(resolution.clone()))
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
         if !duplicates.is_empty() {
             return Err(CatalogContractError::new(
-                "duplicate_template_id",
-                "resolve requests must not contain duplicate template UUIDs".to_owned(),
-                serde_json::json!({"templateIds": duplicates}),
+                "duplicate_resolution",
+                "resolve requests must not contain duplicate resolution tuples".to_owned(),
+                serde_json::json!({"resolutionTuples": duplicates}),
             )
             .into());
         }
@@ -300,6 +319,8 @@ pub struct ResolveJsonlRecord<'a> {
     #[serde(flatten)]
     pub identity: &'a CatalogIdentity,
     pub result: &'a ResolvedCard,
+    pub authority: &'static str,
+    pub authorizes_action: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -343,6 +364,20 @@ pub struct CatalogCardProjection {
     pub tags: Vec<String>,
     pub hidden_tags: Vec<String>,
     pub tooltips: TooltipResolution,
+    pub external_references: Vec<crate::external_identity::CardExternalReference>,
+}
+
+pub(crate) fn selector_key(
+    enchantment_id: Option<&CanonicalGameIdentifier>,
+    include_all_enchantments: bool,
+) -> String {
+    if include_all_enchantments {
+        "selector/all".to_owned()
+    } else if let Some(enchantment_id) = enchantment_id {
+        format!("selector/exact/{enchantment_id}")
+    } else {
+        "selector/not_requested".to_owned()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -567,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_rejects_duplicate_template_ids() {
+    fn batch_allows_same_template_at_distinct_resolution_tuples() {
         let template_id = "0022c409-c839-41e8-8022-65a407457dfe";
         let request = ResolveBatchRequest {
             requests: [CardTier::Bronze, CardTier::Silver]
@@ -582,8 +617,27 @@ mod tests {
             include_raw_template: false,
             include_all_enchantments: false,
         };
+        request.validate().unwrap();
+    }
+
+    #[test]
+    fn batch_rejects_only_duplicate_resolution_tuples() {
+        let template_id = "0022c409-c839-41e8-8022-65a407457dfe";
+        let request = ResolveBatchRequest {
+            requests: ["all", "all"]
+                .into_iter()
+                .map(|enchantment_id| ResolveCardRequest {
+                    template_id: template_id.parse().unwrap(),
+                    tier: CardTier::Silver,
+                    enchantment_id: Some(enchantment_id.parse().unwrap()),
+                })
+                .collect(),
+            mode: ResolveMode::Strict,
+            include_raw_template: false,
+            include_all_enchantments: false,
+        };
         let error = request.validate().unwrap_err();
         let contract = error.downcast_ref::<CatalogContractError>().unwrap();
-        assert_eq!(contract.code, "duplicate_template_id");
+        assert_eq!(contract.code, "duplicate_resolution");
     }
 }

@@ -9,7 +9,9 @@ use anyhow::{Context, Result, bail};
 use bazaardb_cli::domain::{
     CacheDisposition, CacheMode, GetCardRequest, OUTPUT_SCHEMA_VERSION, SearchCardsRequest,
 };
-use bazaardb_cli::infrastructure::{DEFAULT_API_BASE, GithubUpdater};
+use bazaardb_cli::infrastructure::{
+    DEFAULT_API_BASE, GithubUpdater, catalog_cache_status, clear_catalog_cache, prune_catalog_cache,
+};
 use bazaardb_cli::server::{ServeConfig, loopback_socket};
 use bazaardb_cli::{
     BazaarService, CacheStore, CanonicalGameIdentifier, CanonicalUuid, CardTier, CatalogService,
@@ -323,7 +325,9 @@ async fn run() -> Result<()> {
     let cache = CacheStore::open(&cache_path)?;
 
     match cli.command {
-        Command::Cache(args) => return execute_cache(cache, args, cli.output).await,
+        Command::Cache(args) => {
+            return execute_cache(cache, &catalog_cache_dir, args, cli.output).await;
+        }
         Command::Endpoints => {
             return print_value(
                 &Envelope {
@@ -523,19 +527,29 @@ enum ProviderSelection {
     Parse,
 }
 
-async fn execute_cache(cache: CacheStore, args: CacheArgs, output: OutputFormat) -> Result<()> {
+async fn execute_cache(
+    cache: CacheStore,
+    catalog_cache_dir: &std::path::Path,
+    args: CacheArgs,
+    output: OutputFormat,
+) -> Result<()> {
     let data = match args.command {
-        CacheCommand::Status => serde_json::to_value(cache.status().await?)?,
+        CacheCommand::Status => serde_json::json!({
+            "responses": cache.status().await?,
+            "catalog": catalog_cache_status(catalog_cache_dir)?,
+        }),
         CacheCommand::Prune => {
-            let removed = cache.prune(now_epoch_seconds()?).await?;
-            serde_json::json!({"removed": removed})
+            let responses = cache.prune(now_epoch_seconds()?).await?;
+            let catalog = prune_catalog_cache(catalog_cache_dir)?;
+            serde_json::json!({"responses": {"removed": responses}, "catalog": catalog})
         }
         CacheCommand::Clear { yes } => {
             if !yes {
                 bail!("cache clear requires --yes");
             }
-            let removed = cache.clear().await?;
-            serde_json::json!({"removed": removed})
+            let responses = cache.clear().await?;
+            let catalog = clear_catalog_cache(catalog_cache_dir)?;
+            serde_json::json!({"responses": {"removed": responses}, "catalog": catalog})
         }
     };
     print_value(
@@ -653,6 +667,8 @@ fn print_resolve(response: &ResolveBatchResponse, output: OutputFormat) -> Resul
                     serde_json::to_string(&ResolveJsonlRecord {
                         identity: &response.identity,
                         result,
+                        authority: bazaardb_cli::INSPECTION_AUTHORITY,
+                        authorizes_action: false,
                     })?
                 );
             }

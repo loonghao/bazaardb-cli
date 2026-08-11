@@ -86,9 +86,12 @@ validates the snapshot and skips both database hashing and SQLite/JSON parsing.
 Corrupt payloads and format/schema/resolver mismatches rebuild automatically.
 
 Set `RUST_LOG=bazaardb_cli::catalog_cache=info` to record `hit` or
-`miss_rebuilt`, reason, duration, database bytes, SQLite rows, and snapshot I/O.
+`miss_rebuilt`, reason, duration, database bytes, SQLite rows, snapshot I/O,
+generation count/bytes, and prune activity.
 The response-cache key includes the content-addressed catalog cache key. Run
-`bazaardb-cli cache prune` to remove expired response generations.
+`bazaardb-cli cache prune` to remove expired response entries and enforce the
+catalog policy of three generations, 30 days, and 1 GiB. `cache status` reports
+both stores; `cache clear --yes` clears both through narrowly matched files.
 
 Concurrent `--all` pages share the in-memory generation. `--cache-mode offline`
 may use a local snapshot or read the local database because neither performs a
@@ -96,7 +99,9 @@ network request.
 
 ### Static catalog protocol
 
-`resolve` is strict by default and accepts 1-64 unique canonical template UUIDs.
+`resolve` is strict by default and accepts 1-64 canonical template requests.
+Duplicate full resolution tuples are rejected; distinct tiers/selectors for the
+same template remain valid.
 It accumulates attributes from the starting tier through the requested tier,
 with later layers overriding earlier values. Ability and aura IDs remain in
 stable first-seen order. Compact results contain the authoritative SQLite row
@@ -109,8 +114,10 @@ lookup identity and makes strict resolve fail closed.
 Compact search and resolve projections include ordered normalized tooltip text
 with typed shape/missing/malformed status. They also include a per-template
 `templateContentId` over the authoritative row ID and canonical full static
-definition, allowing companion caches to verify template integrity without raw
-templates or live instance overrides.
+definition plus the catalog content fence, allowing companion caches to verify
+template and cross-template dependency integrity without raw templates or live
+instance overrides. Reviewed BazaarDB aliases appear as `externalReferences`
+with a separate `externalIdentityContentId`; local GameData remains authoritative.
 
 Per-card `enchantmentId` uses exact, case-sensitive game identifiers. Without
 one, enchantments report `not_requested`. Only the selected definition is
