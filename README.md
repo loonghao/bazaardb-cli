@@ -64,6 +64,9 @@ bazaardb-cli resolve `
 
 # Find frequent two-card combinations in an exported set of ten-win runs.
 bazaardb-cli ten-wins --input .\runs.json --hero Dooley --min-runs 2
+
+# Generate a season-fenced handbook from the installed snapshot.
+bazaardb-cli profile --hero Pygmalien --season-label "Season 1" --format markdown
 ```
 
 Expected table columns:
@@ -196,6 +199,35 @@ queries are deterministic. See [Ten-win combinations](docs/ten-win-combinations.
 
 The CLI does not obtain run data from BazaarDB. Import only data that you have
 the right to process, then query it locally.
+
+## Gameplay profiles
+
+`profile` generates a reproducible pre-game handbook from the installed
+`GameData.db`. It reads `cards`, `game_modes`, `level_ups`, and `seasons` in
+SQLite query-only mode, matches the hero exactly, and includes the catalog
+identity and content versions. A season is verified only when an explicit
+`--season-label` has one exact local match; the command never guesses that the
+largest season ID is current.
+
+```powershell
+bazaardb-cli profile `
+  --hero Pygmalien `
+  --season-label "Season 1" `
+  --format json
+
+# Optional evidence stays local and explicit.
+bazaardb-cli profile `
+  --hero Pygmalien `
+  --season-label "Season 1" `
+  --supplement .\season-1-sources.json `
+  --runs .\my-runs.json `
+  --format markdown
+```
+
+Without `--runs`, `tenWinEvidence.available` is false and the profile makes no
+ten-win validation claim. Supplement files are bounded, schema-versioned, and
+source-attributed; their URLs are recorded but never fetched. See
+[Gameplay profiles](docs/gameplay-profiles.md).
 
 ## Local HTTP API
 

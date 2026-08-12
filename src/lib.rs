@@ -2,6 +2,7 @@ pub mod application;
 pub mod catalog;
 pub mod domain;
 pub mod infrastructure;
+pub mod profile;
 pub mod server;
 pub mod ten_wins;
 
@@ -20,6 +21,11 @@ pub use domain::{
 };
 pub use infrastructure::{
     CacheStore, GameDataGateway, GameDataGatewayConfig, detect_game_data_path,
+    load_profile_snapshot,
+};
+pub use profile::{
+    GameplayProfile, ProfileRequest, generate_profile, load_supplement, render_markdown,
+    write_dcc_knowledge,
 };
 pub use ten_wins::{
     RunRecord, TenWinCombination, TenWinFilters, TenWinQuery, TenWinResult, analyze_ten_wins,
