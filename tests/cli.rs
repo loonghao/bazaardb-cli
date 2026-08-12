@@ -23,6 +23,7 @@ fn profile_reads_multiple_tables_and_does_not_invent_ten_win_evidence() {
     let directory = TempDir::new().unwrap();
     let database = directory.path().join("GameData.db");
     let cache = directory.path().join("cache");
+    let knowledge = directory.path().join("knowledge");
     create_profile_game_data(&database);
     let output = command()
         .args([
@@ -37,6 +38,8 @@ fn profile_reads_multiple_tables_and_does_not_invent_ten_win_evidence() {
             "Pygmalien",
             "--season-label",
             "Season 1",
+            "--knowledge-root",
+            knowledge.to_str().unwrap(),
         ])
         .output()
         .unwrap();
@@ -63,6 +66,20 @@ fn profile_reads_multiple_tables_and_does_not_invent_ten_win_evidence() {
     );
     assert_eq!(value["tenWinEvidence"]["available"], false);
     assert_eq!(value["tenWinEvidence"]["inputRuns"], 0);
+    let profile_root = knowledge.join("the-bazaar");
+    let index: serde_json::Value =
+        serde_json::from_slice(&fs::read(profile_root.join("index.json")).unwrap()).unwrap();
+    assert_eq!(index["schemaVersion"], 2);
+    let entry = &index["documents"][0];
+    assert_eq!(entry["selectors"]["hero"], "Pygmalien");
+    assert_eq!(entry["selectors"]["archetype"], "piggles");
+    assert_eq!(entry["identities"]["content-version"], "5.0.0");
+    let document: serde_json::Value = serde_json::from_slice(
+        &fs::read(profile_root.join(entry["path"].as_str().unwrap())).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(document["fences"], entry["identities"]);
+    assert_eq!(document["evidence"]["tenWin"]["status"], "unavailable");
 }
 
 #[test]

@@ -25,7 +25,7 @@ pub use infrastructure::{
 };
 pub use profile::{
     GameplayProfile, ProfileRequest, generate_profile, load_supplement, render_markdown,
-    write_dcc_knowledge,
+    write_knowledge_documents,
 };
 pub use ten_wins::{
     RunRecord, TenWinCombination, TenWinFilters, TenWinQuery, TenWinResult, analyze_ten_wins,

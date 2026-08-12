@@ -806,28 +806,20 @@ pub fn render_markdown(profile: &GameplayProfile) -> String {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DccPlaybook {
+pub struct KnowledgeDocument {
     pub schema_version: u32,
     pub profile_id: &'static str,
-    pub season_id: String,
-    pub hero: String,
+    pub id: String,
+    pub fences: BTreeMap<String, String>,
     pub generated_at: String,
-    pub catalog_fence: DccCatalogFence,
-    pub source_refs: Vec<DccSourceRef>,
-    pub chapters: DccChapters,
-    pub ten_win_evidence: DccTenWinEvidence,
+    pub source_refs: Vec<KnowledgeSourceRef>,
+    pub content: KnowledgeContent,
+    pub evidence: KnowledgeEvidence,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DccCatalogFence {
-    pub content_id: String,
-    pub database_sha256: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DccSourceRef {
+pub struct KnowledgeSourceRef {
     pub kind: String,
     pub reference: String,
     pub scope: String,
@@ -835,7 +827,10 @@ pub struct DccSourceRef {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DccChapters {
+pub struct KnowledgeContent {
+    pub hero: String,
+    pub archetype: &'static str,
+    pub observed_content_versions: Vec<String>,
     pub rules: Value,
     pub hero_pool: Value,
     pub archetypes: Value,
@@ -849,7 +844,14 @@ pub struct DccChapters {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DccTenWinEvidence {
+pub struct KnowledgeEvidence {
+    pub season: Value,
+    pub ten_win: KnowledgeTenWinEvidence,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeTenWinEvidence {
     pub status: &'static str,
     pub input_runs: usize,
     pub matched_runs: usize,
@@ -858,67 +860,77 @@ pub struct DccTenWinEvidence {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct DccKnowledgeIndex {
+struct KnowledgeIndex {
     schema_version: u32,
     profile_id: String,
-    entries: Vec<DccKnowledgeEntry>,
+    documents: Vec<KnowledgeIndexEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct DccKnowledgeEntry {
-    season_id: String,
-    hero: String,
+struct KnowledgeIndexEntry {
+    id: String,
     path: String,
-    catalog_content_ids: Vec<String>,
-    generated_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    verified_at: Option<String>,
+    identities: BTreeMap<String, String>,
+    selectors: BTreeMap<String, String>,
 }
 
-pub fn write_dcc_knowledge(profile: &GameplayProfile, directory: &Path) -> Result<PathBuf> {
+pub fn write_knowledge_documents(
+    profile: &GameplayProfile,
+    knowledge_root: &Path,
+) -> Result<PathBuf> {
     let now = OffsetDateTime::now_utc();
     let generated_at = now
         .format(&time::format_description::well_known::Rfc3339)
         .context("failed to format generatedAt")?;
-    let season_id = profile.season.label.as_deref().map_or_else(
-        || {
-            let date = now.date();
-            format!("installed-snapshot-{date}")
-        },
-        slug,
-    );
-    let hero_id = slug(&profile.hero);
-    let relative_path = format!("playbooks/{season_id}/{hero_id}.json");
-    let output_path = directory.join(relative_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+    if profile.catalog_identity.content_versions.is_empty() {
+        bail!("knowledge documents require at least one observed content version");
+    }
+    let profile_root = knowledge_root.join("the-bazaar");
+    let document_id = format!("gameplay-{}-piggles", slug(&profile.hero));
+    let relative_path = format!("documents/{document_id}.json");
+    let output_path = profile_root.join(relative_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let identities = BTreeMap::from([
+        (
+            "content-version".to_owned(),
+            profile.catalog_identity.content_versions.join(","),
+        ),
+        (
+            "database-sha256".to_owned(),
+            format!("sha256:{}", profile.catalog_identity.database_sha256),
+        ),
+    ]);
+    let selectors = BTreeMap::from([
+        ("archetype".to_owned(), "piggles".to_owned()),
+        ("hero".to_owned(), profile.hero.clone()),
+    ]);
     let source_refs = profile
         .sources
         .iter()
-        .map(|source| DccSourceRef {
+        .map(|source| KnowledgeSourceRef {
             kind: source.kind.to_owned(),
             reference: "installed/GameData.db".to_owned(),
             scope: source.scope.clone(),
         })
         .chain(profile.supplement.iter().flat_map(|supplement| {
-            supplement.sources.iter().map(|source| DccSourceRef {
+            supplement.sources.iter().map(|source| KnowledgeSourceRef {
                 kind: "supplement".to_owned(),
                 reference: source.url.clone(),
                 scope: source.scope.clone(),
             })
         }))
         .collect();
-    let playbook = DccPlaybook {
-        schema_version: 1,
+    let document = KnowledgeDocument {
+        schema_version: 2,
         profile_id: "the-bazaar",
-        season_id: season_id.clone(),
-        hero: profile.hero.clone(),
+        id: document_id.clone(),
+        fences: identities.clone(),
         generated_at: generated_at.clone(),
-        catalog_fence: DccCatalogFence {
-            content_id: format!("sha256:{}", profile.catalog_identity.database_sha256),
-            database_sha256: profile.catalog_identity.database_sha256.clone(),
-        },
         source_refs,
-        chapters: DccChapters {
+        content: KnowledgeContent {
+            hero: profile.hero.clone(),
+            archetype: "piggles",
+            observed_content_versions: profile.catalog_identity.content_versions.clone(),
             rules: serde_json::to_value(&profile.rules)?,
             hero_pool: serde_json::to_value(&profile.hero_pool)?,
             archetypes: serde_json::to_value(&profile.archetypes)?,
@@ -933,68 +945,84 @@ pub fn write_dcc_knowledge(profile: &GameplayProfile, directory: &Path) -> Resul
                 .and_then(|value| value.strategy.clone()),
             warnings: profile.warnings.clone(),
         },
-        ten_win_evidence: DccTenWinEvidence {
-            status: if profile.ten_win_evidence.available {
-                "available"
-            } else {
-                "unavailable"
+        evidence: KnowledgeEvidence {
+            season: serde_json::to_value(&profile.season)?,
+            ten_win: KnowledgeTenWinEvidence {
+                status: if profile.ten_win_evidence.available {
+                    "available"
+                } else {
+                    "unavailable"
+                },
+                input_runs: profile.ten_win_evidence.input_runs,
+                matched_runs: profile.ten_win_evidence.matched_runs,
+                combinations: serde_json::to_value(&profile.ten_win_evidence.combinations)?,
             },
-            input_runs: profile.ten_win_evidence.input_runs,
-            matched_runs: profile.ten_win_evidence.matched_runs,
-            combinations: serde_json::to_value(&profile.ten_win_evidence.combinations)?,
         },
     };
-    atomic_json_write(&output_path, &playbook)?;
-
-    let index_path = directory.join("index.json");
+    let index_path = profile_root.join("index.json");
     let mut index = if index_path.exists() {
         let metadata = fs::metadata(&index_path)?;
         if metadata.len() > MAX_SUPPLEMENT_BYTES {
-            bail!("dcc knowledge index exceeds the 2 MiB limit");
+            bail!("knowledge index exceeds the 2 MiB limit");
         }
-        serde_json::from_slice::<DccKnowledgeIndex>(&fs::read(&index_path)?)
-            .context("existing dcc knowledge index is invalid")?
+        serde_json::from_slice::<KnowledgeIndex>(&fs::read(&index_path)?)
+            .context("existing knowledge index is invalid")?
     } else {
-        DccKnowledgeIndex {
-            schema_version: 1,
+        KnowledgeIndex {
+            schema_version: 2,
             profile_id: "the-bazaar".to_owned(),
-            entries: Vec::new(),
+            documents: Vec::new(),
         }
     };
-    if index.schema_version != 1 || index.profile_id != "the-bazaar" {
-        bail!("existing dcc knowledge index has an incompatible contract");
+    if index.schema_version != 2 || index.profile_id != "the-bazaar" {
+        bail!("existing knowledge index has an incompatible contract");
     }
-    let entry = DccKnowledgeEntry {
-        season_id: season_id.clone(),
-        hero: profile.hero.clone(),
+    let mut document_ids = BTreeSet::new();
+    if index
+        .documents
+        .iter()
+        .any(|entry| !document_ids.insert(entry.id.as_str()))
+    {
+        bail!("existing knowledge index contains duplicate document IDs");
+    }
+    let entry = KnowledgeIndexEntry {
+        id: document_id.clone(),
         path: relative_path,
-        catalog_content_ids: vec![playbook.catalog_fence.content_id.clone()],
-        generated_at: generated_at.clone(),
-        verified_at: profile.season.verified.then_some(generated_at),
+        identities,
+        selectors,
     };
     if let Some(existing) = index
-        .entries
+        .documents
         .iter_mut()
-        .find(|candidate| candidate.season_id == season_id && candidate.hero == profile.hero)
+        .find(|candidate| candidate.id == document_id)
     {
         *existing = entry;
     } else {
-        index.entries.push(entry);
+        index.documents.push(entry);
     }
-    index.entries.sort_by(|left, right| {
-        left.season_id
-            .cmp(&right.season_id)
-            .then_with(|| left.hero.cmp(&right.hero))
-    });
-    atomic_json_write(&index_path, &index)?;
+    index
+        .documents
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    let document_json = bounded_json(&document)?;
+    let index_json = bounded_json(&index)?;
+    atomic_write(&output_path, &document_json)?;
+    atomic_write(&index_path, &index_json)?;
     Ok(output_path)
 }
 
-fn atomic_json_write(path: &Path, value: &impl Serialize) -> Result<()> {
+fn bounded_json(value: &impl Serialize) -> Result<Vec<u8>> {
+    let encoded = serde_json::to_vec_pretty(value)?;
+    if encoded.len() as u64 > MAX_SUPPLEMENT_BYTES {
+        bail!("knowledge JSON exceeds the 2 MiB context file limit");
+    }
+    Ok(encoded)
+}
+
+fn atomic_write(path: &Path, encoded: &[u8]) -> Result<()> {
     let parent = path.parent().context("output path has no parent")?;
     fs::create_dir_all(parent)?;
     let temporary = path.with_extension("tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(value)?)?;
+    fs::write(&temporary, encoded)?;
     if path.exists() {
         fs::remove_file(path)?;
     }
@@ -1154,19 +1182,20 @@ mod tests {
     }
 
     #[test]
-    fn dcc_knowledge_writer_preserves_unrelated_index_entries() {
+    fn knowledge_writer_emits_exact_generic_context_and_preserves_unrelated_documents() {
         let directory = tempfile::tempdir().unwrap();
+        let profile_root = directory.path().join("the-bazaar");
+        fs::create_dir_all(&profile_root).unwrap();
         fs::write(
-            directory.path().join("index.json"),
+            profile_root.join("index.json"),
             serde_json::to_vec(&json!({
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "profileId": "the-bazaar",
-                "entries": [{
-                    "seasonId": "season-0",
-                    "hero": "Dooley",
-                    "path": "playbooks/season-0/dooley.json",
-                    "catalogContentIds": ["sha256:old"],
-                    "generatedAt": "2026-01-01T00:00:00Z"
+                "documents": [{
+                    "id": "base-rules",
+                    "path": "documents/base-rules.json",
+                    "identities": {},
+                    "selectors": {}
                 }]
             }))
             .unwrap(),
@@ -1182,22 +1211,81 @@ mod tests {
             None,
         )
         .unwrap();
-        let playbook_path = write_dcc_knowledge(&profile, directory.path()).unwrap();
-        let playbook: Value = serde_json::from_slice(&fs::read(playbook_path).unwrap()).unwrap();
-        assert_eq!(playbook["profileId"], "the-bazaar");
-        assert_eq!(playbook["seasonId"], "season-1");
-        assert_eq!(playbook["tenWinEvidence"]["status"], "unavailable");
-        assert_eq!(playbook["catalogFence"]["contentId"], "sha256:dbhash");
-        let index: Value =
-            serde_json::from_slice(&fs::read(directory.path().join("index.json")).unwrap())
-                .unwrap();
-        assert_eq!(index["entries"].as_array().unwrap().len(), 2);
-        assert!(
-            index["entries"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry["hero"] == "Dooley")
+        let document_path = write_knowledge_documents(&profile, directory.path()).unwrap();
+        assert_eq!(
+            document_path,
+            profile_root.join("documents/gameplay-pygmalien-piggles.json")
         );
+        let document: Value = serde_json::from_slice(&fs::read(document_path).unwrap()).unwrap();
+        assert_eq!(document["schemaVersion"], 2);
+        assert_eq!(document["profileId"], "the-bazaar");
+        assert_eq!(document["id"], "gameplay-pygmalien-piggles");
+        assert_eq!(document["fences"]["database-sha256"], "sha256:dbhash");
+        assert_eq!(document["fences"]["content-version"], "5.0.0");
+        assert_eq!(document["evidence"]["season"]["verified"], true);
+        assert_eq!(document["evidence"]["tenWin"]["status"], "unavailable");
+        assert!(document.get("seasonId").is_none());
+        assert!(document.get("catalogFence").is_none());
+        assert!(document.get("chapters").is_none());
+        let index: Value =
+            serde_json::from_slice(&fs::read(profile_root.join("index.json")).unwrap()).unwrap();
+        assert_eq!(index["schemaVersion"], 2);
+        assert_eq!(index["documents"].as_array().unwrap().len(), 2);
+        let entry = index["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == "gameplay-pygmalien-piggles")
+            .unwrap();
+        assert_eq!(entry["path"], "documents/gameplay-pygmalien-piggles.json");
+        assert_eq!(entry["identities"], document["fences"]);
+        assert_eq!(entry["selectors"]["hero"], "Pygmalien");
+        assert_eq!(entry["selectors"]["archetype"], "piggles");
+        assert!(entry.get("seasonId").is_none());
+        assert!(index.get("entries").is_none());
+    }
+
+    #[test]
+    fn knowledge_writer_requires_an_observed_content_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut profile = generate_profile(
+            snapshot(),
+            &ProfileRequest {
+                hero: "Pygmalien".to_owned(),
+                season_label: None,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        profile.catalog_identity.content_versions.clear();
+        let error = write_knowledge_documents(&profile, directory.path()).unwrap_err();
+        assert!(error.to_string().contains("observed content version"));
+        assert!(!directory.path().join("the-bazaar").exists());
+    }
+
+    #[test]
+    fn knowledge_writer_rejects_legacy_index_before_writing_a_document() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile_root = directory.path().join("the-bazaar");
+        fs::create_dir_all(&profile_root).unwrap();
+        fs::write(
+            profile_root.join("index.json"),
+            br#"{"schemaVersion":1,"profileId":"the-bazaar","entries":[]}"#,
+        )
+        .unwrap();
+        let profile = generate_profile(
+            snapshot(),
+            &ProfileRequest {
+                hero: "Pygmalien".to_owned(),
+                season_label: None,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        let error = write_knowledge_documents(&profile, directory.path()).unwrap_err();
+        assert!(error.to_string().contains("invalid"));
+        assert!(!profile_root.join("documents").exists());
     }
 }
