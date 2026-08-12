@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.0.0](https://github.com/loonghao/bazaardb-cli/compare/v0.2.0...v1.0.0) (2026-08-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* emit generic gameplay context documents ([#20](https://github.com/loonghao/bazaardb-cli/issues/20))
+
+### Features
+
+* add ten-win combination queries ([f4fb85f](https://github.com/loonghao/bazaardb-cli/commit/f4fb85fba10f5149259a92f2988f5c40194c16a6))
+* emit generic gameplay context documents ([#20](https://github.com/loonghao/bazaardb-cli/issues/20)) ([a809e6b](https://github.com/loonghao/bazaardb-cli/commit/a809e6b0c2ba3f595cdbf5c088375fad65182ff5))
+* generate seasonal gameplay profiles ([#18](https://github.com/loonghao/bazaardb-cli/issues/18)) ([0826817](https://github.com/loonghao/bazaardb-cli/commit/08268179f919c58d17542324ff4804c2a523353f))
+
+
+### Bug Fixes
+
+* tighten data-source boundaries ([5d5aaa8](https://github.com/loonghao/bazaardb-cli/commit/5d5aaa8162ea59db30bf856b9bb3cdadc750004c))
+
 ## [0.2.0](https://github.com/loonghao/bazaardb-cli/compare/v0.1.2...v0.2.0) (2026-08-11)
 
 
