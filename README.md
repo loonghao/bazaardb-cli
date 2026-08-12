@@ -65,7 +65,7 @@ bazaardb-cli resolve `
 # Find frequent two-card combinations in an exported set of ten-win runs.
 bazaardb-cli ten-wins --input .\runs.json --hero Dooley --min-runs 2
 
-# Generate a season-fenced handbook from the installed snapshot.
+# Generate a handbook from the installed snapshot with explicit season evidence.
 bazaardb-cli profile --hero Pygmalien --season-label "Season 1" --format markdown
 ```
 
@@ -221,6 +221,7 @@ bazaardb-cli profile `
   --season-label "Season 1" `
   --supplement .\season-1-sources.json `
   --runs .\my-runs.json `
+  --knowledge-root "$env:USERPROFILE\.dcc-cua\knowledge" `
   --format markdown
 ```
 
@@ -228,6 +229,12 @@ Without `--runs`, `tenWinEvidence.available` is false and the profile makes no
 ten-win validation claim. Supplement files are bounded, schema-versioned, and
 source-attributed; their URLs are recorded but never fetched. See
 [Gameplay profiles](docs/gameplay-profiles.md).
+
+`--knowledge-root` additionally writes the generic context contract at
+`<root>/the-bazaar/index.json` and `documents/*.json`. Its exact identities are
+`database-sha256` and `content-version`; `hero` and `archetype` are ordinary
+key/value selectors. The generated layout has no season, hero, or playbook
+schema branches.
 
 ## Local HTTP API
 

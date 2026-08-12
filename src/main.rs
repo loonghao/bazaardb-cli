@@ -14,7 +14,7 @@ use bazaardb_cli::infrastructure::{
     load_run_export, prune_catalog_cache,
 };
 use bazaardb_cli::profile::{
-    ProfileRequest, generate_profile, load_supplement, render_markdown, write_dcc_knowledge,
+    ProfileRequest, generate_profile, load_supplement, render_markdown, write_knowledge_documents,
 };
 use bazaardb_cli::server::{ServeConfig, loopback_socket};
 use bazaardb_cli::{
@@ -126,9 +126,9 @@ struct ProfileArgs {
     #[arg(long, value_enum, default_value_t = ProfileFormat::Json)]
     format: ProfileFormat,
 
-    /// Also write a dcc-cua knowledge playbook and merge its index.json.
+    /// Also write schema-versioned context documents below ROOT/the-bazaar.
     #[arg(long, value_name = "DIR")]
-    dcc_knowledge_dir: Option<PathBuf>,
+    knowledge_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -622,9 +622,9 @@ async fn execute_profile(services: &SelectedServices, args: ProfileArgs) -> Resu
         supplement,
         runs.as_deref(),
     )?;
-    if let Some(directory) = args.dcc_knowledge_dir.as_deref() {
-        let path = write_dcc_knowledge(&profile, directory)?;
-        tracing::info!(path = %path.display(), "wrote dcc-cua knowledge playbook");
+    if let Some(directory) = args.knowledge_root.as_deref() {
+        let path = write_knowledge_documents(&profile, directory)?;
+        tracing::info!(path = %path.display(), "wrote profile context document");
     }
     match args.format {
         ProfileFormat::Json => println!("{}", serde_json::to_string_pretty(&profile)?),
