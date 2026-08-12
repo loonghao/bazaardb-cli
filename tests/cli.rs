@@ -19,6 +19,53 @@ fn command() -> Command {
 }
 
 #[test]
+fn profile_reads_multiple_tables_and_does_not_invent_ten_win_evidence() {
+    let directory = TempDir::new().unwrap();
+    let database = directory.path().join("GameData.db");
+    let cache = directory.path().join("cache");
+    create_profile_game_data(&database);
+    let output = command()
+        .args([
+            "--provider",
+            "game-data",
+            "--game-data",
+            database.to_str().unwrap(),
+            "--cache-dir",
+            cache.to_str().unwrap(),
+            "profile",
+            "--hero",
+            "Pygmalien",
+            "--season-label",
+            "Season 1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["schemaVersion"], 1);
+    assert_eq!(value["season"]["verified"], true);
+    assert_eq!(value["rules"][0]["victoriesToWin"], 10);
+    assert_eq!(value["heroPool"]["always"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        value["archetypes"]["piggles"]["core"][0]["name"],
+        "Piggles Launcher"
+    );
+    assert_eq!(
+        value["levelUpChoices"][0]["eligibleGroups"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(value["tenWinEvidence"]["available"], false);
+    assert_eq!(value["tenWinEvidence"]["inputRuns"], 0);
+}
+
+#[test]
 fn sqlite_row_id_is_authoritative_and_payload_conflicts_fail_closed() {
     let directory = TempDir::new().unwrap();
     let database = directory.path().join("GameData.db");
@@ -364,6 +411,97 @@ fn create_game_data(path: &Path) {
             )
             .unwrap();
     }
+}
+
+fn create_profile_game_data(path: &Path) {
+    let connection = Connection::open(path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE cards (Id TEXT NOT NULL PRIMARY KEY, Data BLOB NOT NULL);
+             CREATE TABLE game_modes (Id TEXT NOT NULL PRIMARY KEY, Data BLOB NOT NULL);
+             CREATE TABLE level_ups (Id INTEGER NOT NULL PRIMARY KEY, Data BLOB NOT NULL);
+             CREATE TABLE seasons (Id INTEGER NOT NULL PRIMARY KEY, Data BLOB NOT NULL);",
+        )
+        .unwrap();
+    let launcher = json!({
+        "Id": EAGLE_ID,
+        "Version": "5.0.0",
+        "InternalName": "Piggles Launcher",
+        "Type": "Item",
+        "Heroes": ["Pygmalien"],
+        "StartingTier": "Bronze",
+        "Size": "Medium",
+        "Tags": ["Toy"],
+        "SpawningEligibility": "Always",
+        "Localization": {
+            "Title": {"Text": "Piggles Launcher"},
+            "Tooltips": [{"Content": {"Text": "Charge an adjacent Small item"}}]
+        },
+        "Tiers": {"Bronze": {"Attributes": {"Damage": 10}}}
+    });
+    let wrong_hero = json!({
+        "Id": MERCHANT_ID,
+        "Version": "5.0.0",
+        "InternalName": "Wrong Case",
+        "Type": "Item",
+        "Heroes": ["pygmalien"],
+        "StartingTier": "Bronze",
+        "Size": "Small",
+        "Tags": [],
+        "SpawningEligibility": "Always",
+        "Tiers": {"Bronze": {"Attributes": {}}}
+    });
+    for card in [launcher, wrong_hero] {
+        connection
+            .execute(
+                "INSERT INTO cards (Id, Data) VALUES (?1, ?2)",
+                params![
+                    card["Id"].as_str().unwrap(),
+                    serde_json::to_vec(&card).unwrap()
+                ],
+            )
+            .unwrap();
+    }
+    let game_mode = json!({
+        "Id": "base",
+        "Version": "5.0.0",
+        "InternalName": "Base GameMode",
+        "VictoriesToWin": 10,
+        "NumberOfDays": 10,
+        "HoursInADay": 6
+    });
+    connection
+        .execute(
+            "INSERT INTO game_modes (Id, Data) VALUES (?1, ?2)",
+            params!["base", serde_json::to_vec(&game_mode).unwrap()],
+        )
+        .unwrap();
+    let level_up = json!({
+        "Level": 1,
+        "Version": "5.0.0",
+        "Rewards": {"Groups": [{
+            "Filters": [{"Ids": [EAGLE_ID]}],
+            "SelectionMethod": "Random",
+            "Prerequisites": [{"Conditions": {
+                "$type": "TRunConditionalPlayerHero",
+                "Heroes": ["Pygmalien"],
+                "Operator": "Any"
+            }}]
+        }]}
+    });
+    connection
+        .execute(
+            "INSERT INTO level_ups (Id, Data) VALUES (?1, ?2)",
+            params![1, serde_json::to_vec(&level_up).unwrap()],
+        )
+        .unwrap();
+    let season = json!({"Id": 2, "Version": "5.0.0", "InternalName": "Season 1"});
+    connection
+        .execute(
+            "INSERT INTO seasons (Id, Data) VALUES (?1, ?2)",
+            params![2, serde_json::to_vec(&season).unwrap()],
+        )
+        .unwrap();
 }
 
 fn mutate_game_data(path: &Path) {

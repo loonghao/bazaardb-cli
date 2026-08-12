@@ -10,7 +10,11 @@ use bazaardb_cli::domain::{
     CacheDisposition, CacheMode, GetCardRequest, OUTPUT_SCHEMA_VERSION, SearchCardsRequest,
 };
 use bazaardb_cli::infrastructure::{
-    GithubUpdater, catalog_cache_status, clear_catalog_cache, load_run_export, prune_catalog_cache,
+    GithubUpdater, catalog_cache_status, clear_catalog_cache, load_profile_snapshot,
+    load_run_export, prune_catalog_cache,
+};
+use bazaardb_cli::profile::{
+    ProfileRequest, generate_profile, load_supplement, render_markdown, write_dcc_knowledge,
 };
 use bazaardb_cli::server::{ServeConfig, loopback_socket};
 use bazaardb_cli::{
@@ -89,6 +93,8 @@ enum Command {
     Resolve(ResolveArgs),
     /// Find frequent card combinations in a local export of ten-win runs.
     TenWins(TenWinsArgs),
+    /// Generate an evidence-fenced gameplay handbook from the installed snapshot.
+    Profile(ProfileArgs),
     /// List every endpoint supported by the configured provider.
     Endpoints,
     /// Inspect or maintain the local response cache.
@@ -97,6 +103,38 @@ enum Command {
     Serve(ServeArgs),
     /// Check for or install a newer GitHub Release binary.
     Update(UpdateArgs),
+}
+
+#[derive(Debug, Args)]
+struct ProfileArgs {
+    /// Canonical hero identifier. Matching against card Heroes is exact.
+    #[arg(long)]
+    hero: String,
+
+    /// Explicit season label matched exactly against the local seasons table.
+    #[arg(long)]
+    season_label: Option<String>,
+
+    /// Optional local, schema-versioned supplement. This command never fetches its URLs.
+    #[arg(long, value_name = "PATH")]
+    supplement: Option<PathBuf>,
+
+    /// Optional local JSON or JSONL run export used only as ten-win evidence.
+    #[arg(long, value_name = "PATH")]
+    runs: Option<PathBuf>,
+
+    #[arg(long, value_enum, default_value_t = ProfileFormat::Json)]
+    format: ProfileFormat,
+
+    /// Also write a dcc-cua knowledge playbook and merge its index.json.
+    #[arg(long, value_name = "DIR")]
+    dcc_knowledge_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ProfileFormat {
+    Json,
+    Markdown,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -367,6 +405,12 @@ async fn run() -> Result<()> {
                                 "commands": ["ten-wins"],
                                 "source": "local JSON or JSONL run export",
                                 "authentication": "none"
+                            },
+                            {
+                                "name": "generate_gameplay_profile",
+                                "commands": ["profile"],
+                                "source": "local GameData.db plus explicit local evidence files",
+                                "network": false
                             }
                         ],
                         "providers": {
@@ -456,6 +500,7 @@ async fn run() -> Result<()> {
             let response = catalog.resolve(&request).await?;
             print_resolve(&response, cli.output)
         }
+        Command::Profile(args) => execute_profile(&services, args).await,
         Command::Serve(args) => {
             if !(5..=86_400).contains(&args.refresh_seconds) {
                 bail!("refresh-seconds must be between 5 and 86400");
@@ -506,6 +551,7 @@ struct SelectedServices {
     cards: BazaarService,
     catalog: Option<CatalogService>,
     source: &'static str,
+    database_path: PathBuf,
 }
 
 fn create_services(
@@ -535,7 +581,7 @@ fn create_services(
     match provider {
         ProviderSelection::GameData(database_path) => {
             let gateway = Arc::new(GameDataGateway::new(GameDataGatewayConfig {
-                database_path,
+                database_path: database_path.clone(),
                 catalog_cache_dir,
                 cache,
             })?);
@@ -544,9 +590,47 @@ fn create_services(
                 cards: BazaarService::new(gateway.clone()),
                 catalog: Some(CatalogService::new(gateway)),
                 source: "local/GameData.db",
+                database_path,
             })
         }
     }
+}
+
+async fn execute_profile(services: &SelectedServices, args: ProfileArgs) -> Result<()> {
+    let catalog = services
+        .catalog
+        .as_ref()
+        .context("profile requires the game-data provider")?;
+    let identity = catalog.status().await?.identity;
+    let database_path = services.database_path.clone();
+    let snapshot =
+        tokio::task::spawn_blocking(move || load_profile_snapshot(&database_path, identity))
+            .await
+            .context("profile snapshot task failed")??;
+    let supplement = args
+        .supplement
+        .as_deref()
+        .map(load_supplement)
+        .transpose()?;
+    let runs = args.runs.as_deref().map(load_run_export).transpose()?;
+    let profile = generate_profile(
+        snapshot,
+        &ProfileRequest {
+            hero: args.hero,
+            season_label: args.season_label,
+        },
+        supplement,
+        runs.as_deref(),
+    )?;
+    if let Some(directory) = args.dcc_knowledge_dir.as_deref() {
+        let path = write_dcc_knowledge(&profile, directory)?;
+        tracing::info!(path = %path.display(), "wrote dcc-cua knowledge playbook");
+    }
+    match args.format {
+        ProfileFormat::Json => println!("{}", serde_json::to_string_pretty(&profile)?),
+        ProfileFormat::Markdown => print!("{}", render_markdown(&profile)),
+    }
+    Ok(())
 }
 
 enum ProviderSelection {
