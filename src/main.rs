@@ -126,7 +126,7 @@ struct ProfileArgs {
     #[arg(long, value_enum, default_value_t = ProfileFormat::Json)]
     format: ProfileFormat,
 
-    /// Also write a dcc-cua knowledge playbook and merge its index.json.
+    /// Profile knowledge root where playbooks/index.json is merged for dcc-cua.
     #[arg(long, value_name = "DIR")]
     dcc_knowledge_dir: Option<PathBuf>,
 }

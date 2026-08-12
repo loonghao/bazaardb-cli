@@ -59,8 +59,10 @@ because profile generation is intentionally offline.
 
 ## dcc-cua knowledge directory
 
-Pass `--dcc-knowledge-dir PATH` to also emit a directly consumable JSON
-playbook under `playbooks/<season>/<hero>.json` and merge its entry into
-`index.json`. Existing entries for other seasons and heroes are preserved. The
-playbook uses `profileId: "the-bazaar"`, fences the exact database SHA-256, and
-marks absent run evidence as `tenWinEvidence.status: "unavailable"`.
+Pass `--dcc-knowledge-dir PATH` with the profile knowledge root (for example,
+`~/.dcc-cua/knowledge/the-bazaar`) to emit a directly consumable JSON playbook
+under `playbooks/<season>/<hero>.json` and merge its entry into
+`playbooks/index.json`. Existing entries for other seasons and heroes are
+preserved. The playbook uses `profileId: "the-bazaar"`, fences the exact
+database SHA-256, and marks absent run evidence as
+`tenWinEvidence.status: "unavailable"`.

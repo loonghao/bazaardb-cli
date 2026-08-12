@@ -946,7 +946,7 @@ pub fn write_dcc_knowledge(profile: &GameplayProfile, directory: &Path) -> Resul
     };
     atomic_json_write(&output_path, &playbook)?;
 
-    let index_path = directory.join("index.json");
+    let index_path = directory.join("playbooks/index.json");
     let mut index = if index_path.exists() {
         let metadata = fs::metadata(&index_path)?;
         if metadata.len() > MAX_SUPPLEMENT_BYTES {
@@ -1156,8 +1156,9 @@ mod tests {
     #[test]
     fn dcc_knowledge_writer_preserves_unrelated_index_entries() {
         let directory = tempfile::tempdir().unwrap();
+        fs::create_dir_all(directory.path().join("playbooks")).unwrap();
         fs::write(
-            directory.path().join("index.json"),
+            directory.path().join("playbooks/index.json"),
             serde_json::to_vec(&json!({
                 "schemaVersion": 1,
                 "profileId": "the-bazaar",
@@ -1188,9 +1189,10 @@ mod tests {
         assert_eq!(playbook["seasonId"], "season-1");
         assert_eq!(playbook["tenWinEvidence"]["status"], "unavailable");
         assert_eq!(playbook["catalogFence"]["contentId"], "sha256:dbhash");
-        let index: Value =
-            serde_json::from_slice(&fs::read(directory.path().join("index.json")).unwrap())
-                .unwrap();
+        let index: Value = serde_json::from_slice(
+            &fs::read(directory.path().join("playbooks/index.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(index["entries"].as_array().unwrap().len(), 2);
         assert!(
             index["entries"]
