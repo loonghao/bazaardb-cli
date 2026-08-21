@@ -77,7 +77,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: loonghao/vx@3e8c6dbe0cb83a45893f7987d5e2ecfd0ae2d75f # v0.9.28
+      - uses: loonghao/vx@61a604b0dc206c691c33db8e8f9c420ca47c3914 # v0.9.30
         with:
           tools: "rust@1.89.0 just@1.58.0"
           setup: "true"
@@ -114,7 +114,7 @@ jobs:
             "$hash  $($_.Name)"
           }
           Set-Content -LiteralPath dist/SHA256SUMS -Value $lines
-      - uses: loonghao/vx@3e8c6dbe0cb83a45893f7987d5e2ecfd0ae2d75f # v0.9.28
+      - uses: loonghao/vx@61a604b0dc206c691c33db8e8f9c420ca47c3914 # v0.9.30
         with:
           tools: "gh"
           cache: "true"
