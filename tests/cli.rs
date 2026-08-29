@@ -53,6 +53,8 @@ fn profile_reads_multiple_tables_and_does_not_invent_ten_win_evidence() {
     assert_eq!(value["season"]["verified"], true);
     assert_eq!(value["rules"][0]["victoriesToWin"], 10);
     assert_eq!(value["heroPool"]["always"].as_array().unwrap().len(), 1);
+    assert_eq!(value["heroPool"]["always"][0]["tags"], json!(["Toy"]));
+    assert_eq!(value["heroPool"]["always"][0]["hiddenTags"], json!([]));
     assert_eq!(
         value["archetypes"]["piggles"]["core"][0]["name"],
         "Piggles Launcher"

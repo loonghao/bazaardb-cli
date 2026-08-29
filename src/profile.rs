@@ -120,6 +120,11 @@ pub struct ProfileCard {
     pub id: String,
     pub name: String,
     pub card_type: Option<String>,
+    /// Public card archetype tags copied from the authoritative GameData
+    /// template. Consumers can match merchant/monster spawn constraints
+    /// without issuing a second `get` request for every profile card.
+    pub tags: Vec<String>,
+    pub hidden_tags: Vec<String>,
     pub starting_tier: Option<String>,
     pub spawning_eligibility: Option<String>,
     pub tooltips: Vec<String>,
@@ -541,6 +546,8 @@ fn profile_card(card: &Value) -> ProfileCard {
         id: text(card, "Id").unwrap_or_default(),
         name,
         card_type: text(card, "Type").or_else(|| text(card, "$type")),
+        tags: strings(card, "Tags"),
+        hidden_tags: strings(card, "HiddenTags"),
         starting_tier: text(card, "StartingTier"),
         spawning_eligibility: text(card, "SpawningEligibility"),
         tooltips: card["Localization"]["Tooltips"]
@@ -683,6 +690,17 @@ fn title(card: &Value) -> String {
 
 fn text(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_owned)
+}
+
+fn strings(value: &Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
 }
 
 fn sort_pool(pool: &mut HeroPool) {

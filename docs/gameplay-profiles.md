@@ -10,7 +10,8 @@ contains:
   spawning eligibility;
 - rules from `game_modes`, choices from `level_ups`, and exact season evidence
   from `seasons`;
-- Piggles core/support cards, tier attributes, tooltips, and adjacency notes;
+- Piggles core/support cards, public and hidden archetype tags, tier
+  attributes, tooltips, and adjacency notes;
 - explicit local ten-win evidence, or an unavailable marker when no matching
   run export was supplied;
 - source boundaries and warnings.
