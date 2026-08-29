@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/loonghao/bazaardb-cli/compare/v1.0.0...v1.1.0) (2026-08-29)
+
+
+### Features
+
+* **profile:** expose card archetype tags ([039a213](https://github.com/loonghao/bazaardb-cli/commit/039a2137582fd0987bcba48086e34b5ab8a831d4))
+
 ## [1.0.0](https://github.com/loonghao/bazaardb-cli/compare/v0.2.0...v1.0.0) (2026-08-12)
 
 
