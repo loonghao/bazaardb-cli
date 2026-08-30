@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: loonghao/vx@3e8c6dbe0cb83a45893f7987d5e2ecfd0ae2d75f # v0.9.28
+      - uses: loonghao/vx@b2c1ce558af4b516261f34a27eb0576a9bec45f1 # v0.9.31
         with:
           tools: "rust@1.89.0 just@1.58.0"
           setup: "true"
